@@ -1,10 +1,12 @@
 package com.lhk.kkrpc.server;
 
+import com.lhk.kkrpc.RpcApplication;
 import com.lhk.kkrpc.model.RpcRequest;
 import com.lhk.kkrpc.model.RpcResponse;
 import com.lhk.kkrpc.registry.LocalRegistry;
 import com.lhk.kkrpc.serializer.JdkSerializer;
 import com.lhk.kkrpc.serializer.Serializer;
+import com.lhk.kkrpc.serializer.SerializerFactory;
 import io.vertx.core.Handler;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpServerRequest;
@@ -21,7 +23,7 @@ public class HttpServerHandler implements Handler<HttpServerRequest> {
     @Override
     public void handle(HttpServerRequest request) {
         // 指定序列化器
-        final Serializer serializer = new JdkSerializer();
+        final Serializer serializer = SerializerFactory.getInstance(RpcApplication.getRpcConfig().getSerializer());
 
         // 记录日志
         System.out.println("Received request: " + request.method() + " " + request.uri());

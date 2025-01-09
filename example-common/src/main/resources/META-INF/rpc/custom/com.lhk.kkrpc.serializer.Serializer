@@ -1,0 +1,2 @@
+json=com.lhk.kkrpc.serializer.JsonSerializer
+kryo=com.lhk.kkrpc.serializer.KryoSerializer

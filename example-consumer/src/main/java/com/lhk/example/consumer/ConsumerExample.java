@@ -1,7 +1,8 @@
 package com.lhk.example.consumer;
 
-import com.lhk.example.common.mockService.UserService;
+
 import com.lhk.example.common.model.User;
+import com.lhk.example.common.service.UserService;
 import com.lhk.kkrpc.proxy.ServiceProxyFactory;
 
 /**
@@ -13,15 +14,13 @@ public class ConsumerExample {
         // 获取代理
         UserService userService = ServiceProxyFactory.getProxy(UserService.class);
         User user = new User();
-        user.setName("yupi");
-        // 调用
+        user.setName("lhk");
+        // 远程调用
         User newUser = userService.getUser(user);
         if (newUser != null) {
             System.out.println(newUser.getName());
         } else {
             System.out.println("user == null");
         }
-        long number = userService.getNumber();
-        System.out.println(number);
     }
 }
