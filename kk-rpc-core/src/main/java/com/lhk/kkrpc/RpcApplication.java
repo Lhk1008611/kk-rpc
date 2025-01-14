@@ -1,7 +1,10 @@
 package com.lhk.kkrpc;
 
+import com.lhk.kkrpc.config.RegistryConfig;
 import com.lhk.kkrpc.config.RpcConfig;
 import com.lhk.kkrpc.constant.RpcConstant;
+import com.lhk.kkrpc.registry.Registry;
+import com.lhk.kkrpc.registry.RegistryFactory;
 import com.lhk.kkrpc.utils.ConfigUtils;
 import lombok.extern.slf4j.Slf4j;
 
@@ -22,6 +25,11 @@ public class RpcApplication {
     public static void init(RpcConfig newRpcConfig) {
         rpcConfig = newRpcConfig;
         log.info("rpc init, config = {}", newRpcConfig.toString());
+        // 注册中心初始化
+        RegistryConfig registryConfig = rpcConfig.getRegistryConfig();
+        Registry registry = RegistryFactory.getInstance(registryConfig.getRegistry());
+        registry.init(registryConfig);
+        log.info("registry init, config = {}", registryConfig);
     }
 
     /**
