@@ -4,13 +4,14 @@ package com.lhk.example.consumer;
 import com.lhk.example.common.model.User;
 import com.lhk.example.common.service.UserService;
 import com.lhk.kkrpc.proxy.ServiceProxyFactory;
+import com.lhk.kkrpc.registry.EtcdRegistry;
 
 /**
  * 简易服务消费者示例（针对测试 kk-rpc-core）
  */
 public class ConsumerExample {
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws InterruptedException {
         // 获取代理
         UserService userService = ServiceProxyFactory.getProxy(UserService.class);
         User user = new User();
@@ -22,5 +23,10 @@ public class ConsumerExample {
         } else {
             System.out.println("user == null");
         }
+        userService.getUser(user);
+
+        Thread.sleep(10000);
+
+        userService.getUser(user);
     }
 }
