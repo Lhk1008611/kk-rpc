@@ -1,1 +1,2 @@
 etcd=com.lhk.kkrpc.registry.EtcdRegistry
+zookeeper=com.lhk.kkrpc.registry.ZooKeeperRegistry
