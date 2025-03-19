@@ -3,6 +3,38 @@ kk-rpc 框架
 
 # etcd
 
+- 安装 etcd ，参考 https://github.com/etcd-io/etcd/releases
+  - 虚拟机重启后需要重新安装一下，因为 tmp 目录在 Linux 重启后会删除
+
+```bash
+ETCD_VER=v3.5.17
+# Linux 查看变量
+echo $ETCD_VER
+
+# choose either URL
+GOOGLE_URL=https://storage.googleapis.com/etcd
+GITHUB_URL=https://github.com/etcd-io/etcd/releases/download
+DOWNLOAD_URL=${GOOGLE_URL}
+
+rm -f /tmp/etcd-${ETCD_VER}-linux-amd64.tar.gz
+rm -rf /tmp/etcd-download-test && mkdir -p /tmp/etcd-download-test
+
+curl -L ${DOWNLOAD_URL}/${ETCD_VER}/etcd-${ETCD_VER}-linux-amd64.tar.gz -o /tmp/etcd-${ETCD_VER}-linux-amd64.tar.gz
+tar xzvf /tmp/etcd-${ETCD_VER}-linux-amd64.tar.gz -C /tmp/etcd-download-test --strip-components=1
+rm -f /tmp/etcd-${ETCD_VER}-linux-amd64.tar.gz
+
+/tmp/etcd-download-test/etcd --version
+/tmp/etcd-download-test/etcdctl version
+/tmp/etcd-download-test/etcdutl version
+
+# start a local etcd server
+/tmp/etcd-download-test/etcd
+
+# write,read to etcd
+/tmp/etcd-download-test/etcdctl --endpoints=localhost:2379 put foo bar
+/tmp/etcd-download-test/etcdctl --endpoints=localhost:2379 get foo
+```
+
 ```bash
 # 开启服务器端口
 firewall-cmd --zone=public --add-port=8889/tcp --permanent
@@ -369,7 +401,97 @@ nohup /opt/etcdkeeper-v0.7.8/etcdkeeper -p 8889 /opt/etcdkeeper-v0.7.8/etcdkeepe
    新建 VertxTcpServer 类，跟之前写的 VertxHttpServer 类似，先创建 Vert.x 的服务器实例，然后定义处理请求的方
    法，比如回复“Hello, client!”，最后启动服务器
 
+   ```java
+   import com.lhk.kkrpc.server.HttpServer;
+   import io.vertx.core.Vertx;
+   import io.vertx.core.buffer.Buffer;
+   import io.vertx.core.net.NetServer;
+   
+   public class VertxTcpServer implements HttpServer {
+   
+       private byte[] handleRequest(byte[] requestData) {
+           // 在这里编写处理请求的逻辑，根据 requestData 构造响应数据并返回
+           // 这里只是一个示例，实际逻辑需要根据具体的业务需求来实现
+           System.out.println("Received request: " + new String(requestData));
+           return "Hello, client!".getBytes();
+       }
+   
+       @Override
+       public void doStart(int port) {
+           // 创建 Vert.x 实例
+           Vertx vertx = Vertx.vertx();
+   
+           // 创建 TCP 服务器
+           NetServer server = vertx.createNetServer();
+   
+           // 处理请求
+           server.connectHandler(socket -> {
+               // 处理连接
+               socket.handler(buffer -> {
+                   // 处理接收到的字节数组
+                   byte[] requestData = buffer.getBytes();
+                   // 在这里进行自定义的字节数组处理逻辑，比如解析请求、调用服务、构造响应等
+                   byte[] responseData = handleRequest(requestData);
+                   // 发送响应
+                   socket.write(Buffer.buffer(responseData));
+               });
+           });
+   
+           // 启动 TCP 服务器并监听指定端口
+           server.listen(port, result -> {
+               if (result.succeeded()) {
+                   System.out.println("TCP server started on port " + port);
+               } else {
+                   System.err.println("Failed to start TCP server: " + result.cause());
+               }
+           });
+       }
+   
+       public static void main(String[] args) {
+           new VertxTcpServer().doStart(8888);
+       }
+   }
    ```
+
+   上述代码中的 `socket.write` 方法，就是在向连接到服务器的客户端发送数据。注意发送的数据格式为 `Buffer`，这是 Ver
+   t.x 为我们提供的字节数组缓冲区实现
+
+2. TCP 客户端实现
+
+   新建 `vertxTcpclient` 类，先创建 Vert.x 的客户端实例，然后定义处理请求的方法，比如回复"Hello,server!”，并建立连接
+
+   ```java
+   import io.vertx.core.Vertx;
+   
+   public class VertxTcpClient {
+   
+       public void start() {
+           // 创建 Vert.x 实例
+           Vertx vertx = Vertx.vertx();
+   
+           vertx.createNetClient().connect(8888, "localhost", result -> {
+               if (result.succeeded()) {
+                   System.out.println("Connected to TCP server");
+                   io.vertx.core.net.NetSocket socket = result.result();
+                   // 发送数据
+                   socket.write("Hello, server!");
+                   // 接收响应
+                   socket.handler(buffer -> {
+                       System.out.println("Received response from server: " + buffer.toString());
+                   });
+               } else {
+                   System.err.println("Failed to connect to TCP server");
+               }
+           });
+       }
+   
+       public static void main(String[] args) {
+           new VertxTcpClient().start();
+       }
+   }
+   ```
+
+3. 可以先运行上面的 main 方法进行测试，先启动服务器，再启动客户端，能够在控制台看到它们互相打招呼的输出
    
    ```
 
