@@ -492,10 +492,182 @@ nohup /opt/etcdkeeper-v0.7.8/etcdkeeper -p 8889 /opt/etcdkeeper-v0.7.8/etcdkeepe
    ```
 
 3. 可以先运行上面的 main 方法进行测试，先启动服务器，再启动客户端，能够在控制台看到它们互相打招呼的输出
+
+#### 3、编码/解码器实现
+
+- 注意，Vert.x 的 TCP 服务器收发的消息是 Bufer 类型，不能直接写入一个对象。因此，我们需要编码器和解码器，将 Java 的消息对象和 Buffer 进行相互转换
+
+- 使用 HTTP 请求和响应时，直接从请求 body 处理器中获取到 body 字节数组，再通过序列化(反序列化)得到 RpcRequest 或 RpcResponse 对象。使用 TCP 服务器后，只不过改为从 Bufer 中获取字节数组，然后编解码为 RpcReauest 或 RpcResponse 对象，其他的后续处理流程都是可复用的
+
+- 流程如图所示
+
+  ![image-20250319180612959](README.assets/image-20250319180612959.png)
+
+
+
+1. 首先实现消息编码器
+
+   在 protocol 包下新建 `ProtocolMessageEncoder`类，核心流程是依次向 Buffer 缓冲区写入消息对象（`ProtocolMessage`）里的字段
+
+   ```java
+   
+   
+   import com.lhk.kkrpc.serializer.Serializer;
+   import com.lhk.kkrpc.serializer.SerializerFactory;
+   import io.vertx.core.buffer.Buffer;
+   
+   import java.io.IOException;
+   
+   public class ProtocolMessageEncoder {
+   
+       /**
+        * 编码
+        *
+        * @param protocolMessage
+        * @return
+        * @throws IOException
+        */
+       public static Buffer encode(ProtocolMessage<?> protocolMessage) throws IOException {
+           if (protocolMessage == null || protocolMessage.getHeader() == null) {
+               return Buffer.buffer();
+           }
+           ProtocolMessage.Header header = protocolMessage.getHeader();
+           // 依次向缓冲区写入字节
+           Buffer buffer = Buffer.buffer();
+           buffer.appendByte(header.getMagic());
+           buffer.appendByte(header.getVersion());
+           buffer.appendByte(header.getSerializer());
+           buffer.appendByte(header.getType());
+           buffer.appendByte(header.getStatus());
+           buffer.appendLong(header.getRequestId());
+           // 获取序列化器
+           ProtocolMessageSerializerEnum serializerEnum = ProtocolMessageSerializerEnum.getEnumByKey(header.getSerializer());
+           if (serializerEnum == null) {
+               throw new RuntimeException("序列化协议不存在");
+           }
+           Serializer serializer = SerializerFactory.getInstance(serializerEnum.getValue());
+           byte[] bodyBytes = serializer.serialize(protocolMessage.getBody());
+           // 写入 body 长度和数据
+           buffer.appendInt(bodyBytes.length);
+           buffer.appendBytes(bodyBytes);
+           return buffer;
+       }
+   }
    
    ```
 
+2. 实现消息解码器
+
+   在 protocol 包下新建 `ProtocolMessageDecoder` 类， 核心流程是依次从 Buffer 缓冲区的指定位置读取字段，构造出完整的
+
+   消息对象（`ProtocolMessage`）
+
+   ```java
+   import com.lhk.kkrpc.model.RpcRequest;
+   import com.lhk.kkrpc.model.RpcResponse;
+   import com.lhk.kkrpc.serializer.Serializer;
+   import com.lhk.kkrpc.serializer.SerializerFactory;
+   import io.vertx.core.buffer.Buffer;
    
+   import java.io.IOException;
+   
+   /**
+    * 协议消息解码器
+    */
+   public class ProtocolMessageDecoder {
+   
+       /**
+        * 解码
+        *
+        * @param buffer
+        * @return
+        * @throws IOException
+        */
+   
+       public static ProtocolMessage<?> decode(Buffer buffer) throws IOException {
+           // 分别从指定位置读出 Buffer
+           ProtocolMessage.Header header = new ProtocolMessage.Header();
+           byte magic = buffer.getByte(0);
+           // 校验魔数
+           if (magic != ProtocolConstant.PROTOCOL_MAGIC) {
+               throw new RuntimeException("消息 magic 非法");
+           }
+           header.setMagic(magic);
+           header.setVersion(buffer.getByte(1));
+           header.setSerializer(buffer.getByte(2));
+           header.setType(buffer.getByte(3));
+           header.setStatus(buffer.getByte(4));
+           header.setRequestId(buffer.getLong(5));
+           header.setBodyLength(buffer.getInt(13));
+           // 解决粘包问题，只读指定长度的数据
+           byte[] bodyBytes = buffer.getBytes(17, 17 + header.getBodyLength());
+           // 解析消息体
+           ProtocolMessageSerializerEnum serializerEnum = ProtocolMessageSerializerEnum.getEnumByKey(header.getSerializer());
+           if (serializerEnum == null) {
+               throw new RuntimeException("序列化消息的协议不存在");
+           }
+           Serializer serializer = SerializerFactory.getInstance(serializerEnum.getValue());
+           ProtocolMessageTypeEnum messageTypeEnum = ProtocolMessageTypeEnum.getEnumByKey(header.getType());
+           if (messageTypeEnum == null) {
+               throw new RuntimeException("序列化消息的类型不存在");
+           }
+           switch (messageTypeEnum) {
+               case REQUEST:
+                   RpcRequest request = serializer.deserialize(bodyBytes, RpcRequest.class);
+                   return new ProtocolMessage<>(header, request);
+               case RESPONSE:
+                   RpcResponse response = serializer.deserialize(bodyBytes, RpcResponse.class);
+                   return new ProtocolMessage<>(header, response);
+               case HEART_BEAT:
+               case OTHERS:
+               default:
+                   throw new RuntimeException("暂不支持该消息类型");
+           }
+       }
+   }
+   ```
+
+3. 编写单元测试类，先编码再解码，以测试编码器和解码器的正确性
+
+   ```java
+   import cn.hutool.core.util.IdUtil;
+   import com.lhk.kkrpc.constant.RpcConstant;
+   import com.lhk.kkrpc.model.RpcRequest;
+   import io.vertx.core.buffer.Buffer;
+   import org.junit.Assert;
+   import org.junit.Test;
+   import java.io.IOException;
+   
+   public class ProtocolMessageTest {
+   
+       @Test
+       public void testEncodeAndDecode() throws IOException {
+           // 构造消息
+           ProtocolMessage<RpcRequest> protocolMessage = new ProtocolMessage<>();
+           ProtocolMessage.Header header = new ProtocolMessage.Header();
+           header.setMagic(ProtocolConstant.PROTOCOL_MAGIC);
+           header.setVersion(ProtocolConstant.PROTOCOL_VERSION);
+           header.setSerializer((byte) ProtocolMessageSerializerEnum.JDK.getKey());
+           header.setType((byte) ProtocolMessageTypeEnum.REQUEST.getKey());
+           header.setStatus((byte) ProtocolMessageStatusEnum.OK.getValue());
+           header.setRequestId(IdUtil.getSnowflakeNextId());
+           header.setBodyLength(0);
+           RpcRequest rpcRequest = new RpcRequest();
+           rpcRequest.setServiceName("myService");
+           rpcRequest.setMethodName("myMethod");
+           rpcRequest.setServiceVersion(RpcConstant.DEFAULT_SERVICE_VERSION);
+           rpcRequest.setParameterTypes(new Class[]{String.class});
+           rpcRequest.setArgs(new Object[]{"aaa", "bbb"});
+           protocolMessage.setHeader(header);
+           protocolMessage.setBody(rpcRequest);
+   
+           Buffer encodeBuffer = ProtocolMessageEncoder.encode(protocolMessage);
+           ProtocolMessage<?> message = ProtocolMessageDecoder.decode(encodeBuffer);
+           Assert.assertNotNull(message);
+       }
+   }
+   ```
+
 
 2. 
 
