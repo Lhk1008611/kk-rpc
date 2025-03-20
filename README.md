@@ -668,6 +668,83 @@ nohup /opt/etcdkeeper-v0.7.8/etcdkeeper -p 8889 /opt/etcdkeeper-v0.7.8/etcdkeepe
    }
    ```
 
+#### 4、请求处理器实现（服务提供者端调用）
+
+- 请求处理器的作用是接受请求，然后通过反射调用服务实现类
+
+- 可以使用 netty 的 pipeline 组合多个 handler（比如编码 =>解码 =>请求/响应处理）
+
+- 类似之前的 `HttpServerHandler`，开发一个 `TcpServerHandler`，用于处理请求。和 `HttpServerHandler` 的区别只是在获取请求、写入响应的方式上，需要调用上面开发好的编码器和解码器。
+
+- 通过实现 Vert.x 提供的 `Handler<Netsocket>` 接口，可以定义 TCP 请求处理器
+
+- 具体实现
+
+  ```java
+  package com.lhk.kkrpc.server.tcp;
+  
+  import com.lhk.kkrpc.model.RpcRequest;
+  import com.lhk.kkrpc.model.RpcResponse;
+  import com.lhk.kkrpc.protocol.ProtocolMessage;
+  import com.lhk.kkrpc.protocol.ProtocolMessageDecoder;
+  import com.lhk.kkrpc.protocol.ProtocolMessageEncoder;
+  import com.lhk.kkrpc.protocol.ProtocolMessageTypeEnum;
+  import com.lhk.kkrpc.registry.LocalRegistry;
+  import io.vertx.core.Handler;
+  import io.vertx.core.buffer.Buffer;
+  import io.vertx.core.net.NetSocket;
+  
+  import java.io.IOException;
+  import java.lang.reflect.Method;
+  
+  public class TcpServerHandler implements Handler<NetSocket> {
+  
+      @Override
+      public void handle(NetSocket netSocket) {
+          // 处理连接
+          netSocket.handler(buffer -> {
+              // 接受请求，解码
+              ProtocolMessage<RpcRequest> protocolMessage;
+              try {
+                  protocolMessage = (ProtocolMessage<RpcRequest>) ProtocolMessageDecoder.decode(buffer);
+              } catch (IOException e) {
+                  throw new RuntimeException("协议消息解码错误");
+              }
+              RpcRequest rpcRequest = protocolMessage.getBody();
+  
+              // 处理请求
+              // 构造响应结果对象
+              RpcResponse rpcResponse = new RpcResponse();
+              try {
+                  // 获取要调用的服务实现类，通过反射调用
+                  Class<?> implClass = LocalRegistry.get(rpcRequest.getServiceName());
+                  Method method = implClass.getMethod(rpcRequest.getMethodName(), rpcRequest.getParameterTypes());
+                  Object result = method.invoke(implClass.newInstance(), rpcRequest.getArgs());
+                  // 封装返回结果
+                  rpcResponse.setData(result);
+                  rpcResponse.setDataType(method.getReturnType());
+                  rpcResponse.setMessage("ok");
+              } catch (Exception e) {
+                  e.printStackTrace();
+                  rpcResponse.setMessage(e.getMessage());
+                  rpcResponse.setException(e);
+              }
+  
+              // 发送响应，编码
+              ProtocolMessage.Header header = protocolMessage.getHeader();
+              header.setType((byte) ProtocolMessageTypeEnum.RESPONSE.getKey());
+              ProtocolMessage<RpcResponse> responseProtocolMessage = new ProtocolMessage<>(header, rpcResponse);
+              try {
+                  Buffer encode = ProtocolMessageEncoder.encode(responseProtocolMessage);
+                  netSocket.write(encode);
+              } catch (IOException e) {
+                  throw new RuntimeException("协议消息编码错误");
+              }
+          });
+      }
+  }
+  ```
+
 
 2. 
 
