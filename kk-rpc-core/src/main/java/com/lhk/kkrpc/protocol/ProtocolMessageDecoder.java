@@ -14,7 +14,7 @@ import java.io.IOException;
 public class ProtocolMessageDecoder {
 
     /**
-     * 解码
+     * 解码（从 buffer 中获取协议消息字节数组反序列化为对象）
      *
      * @param buffer
      * @return

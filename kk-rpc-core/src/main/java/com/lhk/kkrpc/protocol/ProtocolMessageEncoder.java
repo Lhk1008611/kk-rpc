@@ -10,7 +10,7 @@ import java.io.IOException;
 public class ProtocolMessageEncoder {
 
     /**
-     * 编码
+     * 编码（序列化协议消息为字节数组并加入 buffer）
      *
      * @param protocolMessage
      * @return
