@@ -1145,3 +1145,126 @@ nohup /opt/etcdkeeper-v0.7.8/etcdkeeper -p 8889 /opt/etcdkeeper-v0.7.8/etcdkeepe
   - 思路：将读取完整的消息拆分为2次：
     1.先完整**读取请求头信息**，由于请求头信息长度是固定的，可以使用 `RecordParser` 保证每次都完整读取
     2.再根据请求头长度信息更改 `RecordParser` 的固定长度，保证完整读取到请求体信息
+
+  ```java
+  package com.lhk.kkrpc.server.tcp;
+  
+  import io.vertx.core.Vertx;
+  import io.vertx.core.buffer.Buffer;
+  
+  public class VertxTcpClient {
+      /**
+       * 示例客户端
+       */
+      public void start() {
+          // 创建 Vert.x 实例
+          Vertx vertx = Vertx.vertx();
+  
+          vertx.createNetClient().connect(8888, "localhost", result -> {
+              if (result.succeeded()) {
+                  System.out.println("Connected to TCP server");
+                  io.vertx.core.net.NetSocket socket = result.result();
+                  // 发送数据，测试半包粘包(不固定长度的消息体)
+                  for (int i = 0; i < 10000; i++) {
+                      String str = "Hello, server!Hello, server!Hello, server!Hello, server!"+ i;
+                      // 发送数据
+                      Buffer buffer = Buffer.buffer();
+                      //模拟 header，8个字节
+                      buffer.appendInt(0);  // 4个字节
+                      buffer.appendInt(str.getBytes().length); // 4个字节
+                      buffer.appendBytes(str.getBytes());
+                      socket.write(buffer);
+                  }
+                  // 接收响应
+                  socket.handler(buffer -> {
+                      System.out.println("Received response from server: " + buffer.toString());
+                  });
+              } else {
+                  System.err.println("Failed to connect to TCP server");
+              }
+          });
+      }
+  
+      public static void main(String[] args) {
+          new VertxTcpClient().start();
+      }
+  }
+  ```
+
+  ```java
+  package com.lhk.kkrpc.server.tcp;
+  
+  import com.lhk.kkrpc.server.HttpServer;
+  import io.vertx.core.Handler;
+  import io.vertx.core.Vertx;
+  import io.vertx.core.buffer.Buffer;
+  import io.vertx.core.net.NetServer;
+  import io.vertx.core.parsetools.RecordParser;
+  
+  public class VertxTcpServer implements HttpServer {
+  
+      @Override
+      public void doStart(int port) {
+          // 创建 Vert.x 实例
+          Vertx vertx = Vertx.vertx();
+  
+          // 创建 TCP 服务器
+          NetServer server = vertx.createNetServer();
+  
+          // 请求处理
+  //        server.connectHandler(new TcpServerHandler());
+  
+          // 示例处理请求
+          server.connectHandler(socket -> {
+  
+              // 构造 RecordParser, 为 Parser 指定每次读取固定值长度的内容，8个字节是读取 header 的信息
+              RecordParser recordParser = RecordParser.newFixed(8);
+              recordParser.setOutput(new Handler<Buffer>() {
+                  // 初始化消息体的容量
+                  int bodySize = -1;
+                  // 用于接收一次完整的读取（头 + 体）
+                  Buffer resultBuffer = Buffer.buffer();
+                  @Override
+                  public void handle(Buffer buffer) {
+                      if (bodySize == -1){
+                          // 读取消息体的长度
+                          bodySize = buffer.getInt(4);
+                          // 读取消息体的内容
+                          recordParser.fixedSizeMode(bodySize);
+                          // 将消息头添加到 resultBuffer 中
+                          resultBuffer.appendBuffer(buffer);
+                      }else{
+                          // 将消息体添加到 resultBuffer 中
+                          resultBuffer.appendBuffer(buffer);
+                          System.out.println("resultBuffer:" + new String(buffer.getBytes()));
+                          // 重置一轮，为下次读取消息头做准备
+                          recordParser.fixedSizeMode(8);
+                          bodySize = -1;
+                          resultBuffer = Buffer.buffer();
+                      }
+                  }
+              });
+  
+              // 处理连接
+              socket.handler(recordParser);
+          });
+  
+          // 启动 TCP 服务器并监听指定端口
+          server.listen(port, result -> {
+              if (result.succeeded()) {
+                  System.out.println("TCP server started on port " + port);
+              } else {
+                  System.err.println("Failed to start TCP server: " + result.cause());
+              }
+          });
+      }
+  
+  
+      // 测试运行 tcp 服务器
+      public static void main(String[] args) {
+          new VertxTcpServer().doStart(8888);
+      }
+  }
+  ```
+
+  

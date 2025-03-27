@@ -23,24 +23,30 @@ public class VertxTcpServer implements HttpServer {
         // 示例处理请求
         server.connectHandler(socket -> {
 
-            String correctMessage = "Hello, server!Hello, server!Hello, server!Hello, server!";
-            int correctMessageLength = correctMessage.getBytes().length;
-
-            // 构造 RecordParser, 为 Parser 指定每次读取固定值长度的内容
-            RecordParser recordParser = RecordParser.newFixed(correctMessageLength);
+            // 构造 RecordParser, 为 Parser 指定每次读取固定值长度的内容，8个字节是读取 header 的信息
+            RecordParser recordParser = RecordParser.newFixed(8);
             recordParser.setOutput(new Handler<Buffer>() {
+                // 初始化消息体的容量
+                int bodySize = -1;
+                // 用于接收一次完整的读取（头 + 体）
+                Buffer resultBuffer = Buffer.buffer();
                 @Override
                 public void handle(Buffer buffer) {
-                    // 处理接收到的字节数组
-                    byte[] requestData = buffer.getBytes();
-                    String requestString = new String(requestData);
-                    System.out.println("correct message length: " + correctMessageLength);
-                    System.out.println("Received message length: " + requestData.length);
-                    System.out.println("Received message: " + requestString);
-                    if (requestString.equals(correctMessage)){
-                        System.out.println("Received correct message");
-                    }else {
-                        System.out.println("Received incorrect message");
+                    if (bodySize == -1){
+                        // 读取消息体的长度
+                        bodySize = buffer.getInt(4);
+                        // 读取消息体的内容
+                        recordParser.fixedSizeMode(bodySize);
+                        // 将消息头添加到 resultBuffer 中
+                        resultBuffer.appendBuffer(buffer);
+                    }else{
+                        // 将消息体添加到 resultBuffer 中
+                        resultBuffer.appendBuffer(buffer);
+                        System.out.println("resultBuffer:" + new String(buffer.getBytes()));
+                        // 重置一轮，为下次读取消息头做准备
+                        recordParser.fixedSizeMode(8);
+                        bodySize = -1;
+                        resultBuffer = Buffer.buffer();
                     }
                 }
             });

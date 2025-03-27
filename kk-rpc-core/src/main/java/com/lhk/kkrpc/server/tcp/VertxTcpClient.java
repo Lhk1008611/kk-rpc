@@ -1,6 +1,7 @@
 package com.lhk.kkrpc.server.tcp;
 
 import io.vertx.core.Vertx;
+import io.vertx.core.buffer.Buffer;
 
 public class VertxTcpClient {
     /**
@@ -14,9 +15,16 @@ public class VertxTcpClient {
             if (result.succeeded()) {
                 System.out.println("Connected to TCP server");
                 io.vertx.core.net.NetSocket socket = result.result();
-                // 发送数据，测试半包粘包
+                // 发送数据，测试半包粘包(不固定长度的消息体)
                 for (int i = 0; i < 10000; i++) {
-                    socket.write("Hello, server!Hello, server!Hello, server!Hello, server!");
+                    String str = "Hello, server!Hello, server!Hello, server!Hello, server!"+ i;
+                    // 发送数据
+                    Buffer buffer = Buffer.buffer();
+                    //模拟 header，8个字节
+                    buffer.appendInt(0);  // 4个字节
+                    buffer.appendInt(str.getBytes().length); // 4个字节
+                    buffer.appendBytes(str.getBytes());
+                    socket.write(buffer);
                 }
                 // 接收响应
                 socket.handler(buffer -> {
