@@ -10,6 +10,7 @@ import com.lhk.kkrpc.registry.Registry;
 import com.lhk.kkrpc.registry.RegistryFactory;
 import com.lhk.kkrpc.server.HttpServer;
 import com.lhk.kkrpc.server.VertxHttpServer;
+import com.lhk.kkrpc.server.tcp.VertxTcpServer;
 import com.lhk.kkrpc.utils.ConfigUtils;
 
 /**
@@ -41,8 +42,13 @@ public class ProviderExample {
         }
 
         // 启动 web 服务
-        HttpServer httpServer = new VertxHttpServer();
-        httpServer.doStart(RpcApplication.getRpcConfig().getServerPort());
+//        HttpServer httpServer = new VertxHttpServer();
+//        httpServer.doStart(RpcApplication.getRpcConfig().getServerPort());
+
+        // 启动 tcp 服务
+        VertxTcpServer vertxTcpServer = new VertxTcpServer();
+        vertxTcpServer.doStart(RpcApplication.getRpcConfig().getServerPort());
+
     }
 }
 

@@ -2,15 +2,31 @@ package com.lhk.kkrpc.server.tcp;
 
 import com.lhk.kkrpc.server.HttpServer;
 import io.vertx.core.Vertx;
-import io.vertx.core.buffer.Buffer;
 import io.vertx.core.net.NetServer;
 
 public class VertxTcpServer implements HttpServer {
 
+    /**
+     * 示例请求处理逻辑
+     * @param requestData
+     * @return
+     */
     private byte[] handleRequest(byte[] requestData) {
         // 在这里编写处理请求的逻辑，根据 requestData 构造响应数据并返回
         // 这里只是一个示例，实际逻辑需要根据具体的业务需求来实现
-        System.out.println("Received request: " + new String(requestData));
+        // 演示半包粘包
+        String correctMessage = "Hello, server!Hello, server!Hello, server!Hello, server!";
+        int correctMessageLength = correctMessage.getBytes().length;
+        System.out.println("正确的接收的数据，length:" + correctMessageLength);
+        if (correctMessageLength < requestData.length){
+            System.out.println("粘包，length = " + requestData.length);
+        }
+        if (correctMessageLength > requestData.length){
+            System.out.println("半包，length = " + requestData.length);
+        }
+        if (correctMessageLength == requestData.length){
+            System.out.println("Received request: " + new String(requestData));
+        }
         return "Hello, client!".getBytes();
     }
 
@@ -22,7 +38,10 @@ public class VertxTcpServer implements HttpServer {
         // 创建 TCP 服务器
         NetServer server = vertx.createNetServer();
 
-        // 处理请求
+        // 请求处理
+//        server.connectHandler(new TcpServerHandler());
+
+        // 示例处理请求
         server.connectHandler(socket -> {
             // 处理连接
             socket.handler(buffer -> {
@@ -31,7 +50,7 @@ public class VertxTcpServer implements HttpServer {
                 // 在这里进行自定义的字节数组处理逻辑，比如解析请求、调用服务、构造响应等
                 byte[] responseData = handleRequest(requestData);
                 // 发送响应
-                socket.write(Buffer.buffer(responseData));
+//                socket.write(Buffer.buffer(responseData));
             });
         });
 
@@ -45,6 +64,8 @@ public class VertxTcpServer implements HttpServer {
         });
     }
 
+
+    // 测试运行 tcp 服务器
     public static void main(String[] args) {
         new VertxTcpServer().doStart(8888);
     }

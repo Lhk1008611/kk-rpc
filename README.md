@@ -84,6 +84,8 @@ nohup /opt/etcdkeeper-v0.7.8/etcdkeeper -p 8889 /opt/etcdkeeper-v0.7.8/etcdkeepe
 
 ### 消息结构设计
 
+- 参考：https://cn.dubbo.apache.org/zh-cn/overview/reference/protocols/tcp/
+
 - 消息结构设计的目标是:用 **最少的** 空间传递 **需要的信息**
 
 - 如何使用最少的空间呢?
@@ -865,5 +867,175 @@ nohup /opt/etcdkeeper-v0.7.8/etcdkeeper -p 8889 /opt/etcdkeeper-v0.7.8/etcdkeepe
 
 - 由于 Vert.x 提供的请求处理器是异步、反应式的，为了更方便地获取结果，可以使用 `completableFuture` **转异步为同步**
 
+### 半包粘包问题
 
+- 半包粘包是 TCP 通信中常见的问题，其本质是由于 TCP 协议不保证消息边界导致的。通过在应用层设计明确的消息格式（如消息头、分隔符等），可以有效解决这一问题
+
+  > 半包粘包的概念
+  > 在计算机网络通信中，"半包粘包"是描述数据传输过程中的一种现象。为了更好地理解这一概念，可以先了解什么是粘包和拆包。
+  > 1. 粘包
+  > 定义：当发送方连续发送多条消息时，接收方可能将这些消息合并成一条消息接收，这种现象称为粘包。
+  > 原因：
+  > TCP是基于字节流的协议，不关心应用层的消息边界。
+  > 发送方可能连续发送多条消息，而接收方一次读取到了多条消息的内容。
+  > 2. 拆包
+  > 定义：当发送方的一条完整消息被分成了多段，接收方需要多次读取才能拼接成完整的消息，这种现象称为拆包。
+  > 原因：
+  > TCP协议栈根据MTU（最大传输单元）或网络拥塞情况对数据进行分片。
+  > 接收方一次读取到的数据不足以构成一条完整的消息。
+  > 3. 半包粘包
+  > 定义：半包粘包是粘包和拆包的组合现象，即接收方读取到的数据既包含了多条消息的合并（粘包），又可能包含部分未完成的消息片段（拆包）。
+  > 示例：
+  > 假设发送方发送了两条消息 Message1 和 Message2。
+  > 接收方可能读取到如下内容：
+  > 第一次读取：Message1Par（Message1 的一部分，拆包）。
+  > 第二次读取：t1Message2（Message1 的剩余部分 + Message2 的一部分，粘包）。
+  >
+  > 解决方案
+  > 为了解决半包粘包问题，通常需要在应用层设计明确的消息边界或长度标识。以下是常见的解决方案：
+  >
+  > 
+  >
+  > 方法一：固定长度消息
+  > 原理：每条消息的长度固定，接收方根据固定长度解析消息。
+  > 优点：简单易实现。
+  > 缺点：灵活性差，无法处理动态长度的消息。
+  >
+  > 
+  >
+  > 方法二：消息头携带长度
+  > 原理：在每条消息前添加一个固定长度的消息头，消息头中包含消息体的长度信息。
+  > 优点：灵活支持动态长度的消息。
+  > 缺点：需要额外解析消息头。
+  >
+  > 
+  >
+  > 方法三：特殊分隔符
+  > 原理：使用特定字符（如 \n 或其他不可见字符）作为消息的分隔符。
+  > 优点：实现简单。
+  > 缺点：如果消息内容中包含分隔符，可能导致解析错误。
+  >
+  > 
+  >
+  > 方法四：组合方案
+  > 原理：结合多种方法，例如使用消息头+特殊分隔符，确保消息解析的准确性和灵活性。
+
+#### 1. 演示半包粘包
+
+- 修改 client 端代码，连续发送消息到 server 端
+
+  ```java 
+  import io.vertx.core.Vertx;
+  
+  public class VertxTcpClient {
+      /**
+       * 示例客户端
+       */
+      public void start() {
+          // 创建 Vert.x 实例
+          Vertx vertx = Vertx.vertx();
+  
+          vertx.createNetClient().connect(8888, "localhost", result -> {
+              if (result.succeeded()) {
+                  System.out.println("Connected to TCP server");
+                  io.vertx.core.net.NetSocket socket = result.result();
+                  // 发送数据，测试半包粘包
+                  for (int i = 0; i < 10000; i++) {
+                      socket.write("Hello, server!Hello, server!Hello, server!Hello, server!");
+                  }
+                  // 接收响应
+                  socket.handler(buffer -> {
+                      System.out.println("Received response from server: " + buffer.toString());
+                  });
+              } else {
+                  System.err.println("Failed to connect to TCP server");
+              }
+          });
+      }
+  
+      public static void main(String[] args) {
+          new VertxTcpClient().start();
+      }
+  }
+  ```
+
+- 修改 server 端代码，输出粘包半包情况
+
+  ```java
+  package com.lhk.kkrpc.server.tcp;
+  
+  import com.lhk.kkrpc.server.HttpServer;
+  import io.vertx.core.Vertx;
+  import io.vertx.core.net.NetServer;
+  
+  public class VertxTcpServer implements HttpServer {
+  
+      /**
+       * 示例请求处理逻辑
+       * @param requestData
+       * @return
+       */
+      private byte[] handleRequest(byte[] requestData) {
+          // 在这里编写处理请求的逻辑，根据 requestData 构造响应数据并返回
+          // 这里只是一个示例，实际逻辑需要根据具体的业务需求来实现
+          // 演示半包粘包
+          String correctMessage = "Hello, server!Hello, server!Hello, server!Hello, server!";
+          int correctMessageLength = correctMessage.getBytes().length;
+          System.out.println("正确的接收的数据，length:" + correctMessageLength);
+          if (correctMessageLength < requestData.length){
+              System.out.println("粘包，length = " + requestData.length);
+          }
+          if (correctMessageLength > requestData.length){
+              System.out.println("半包，length = " + requestData.length);
+          }
+          if (correctMessageLength == requestData.length){
+              System.out.println("Received request: " + new String(requestData));
+          }
+          return "Hello, client!".getBytes();
+      }
+  
+      @Override
+      public void doStart(int port) {
+          // 创建 Vert.x 实例
+          Vertx vertx = Vertx.vertx();
+  
+          // 创建 TCP 服务器
+          NetServer server = vertx.createNetServer();
+  
+          // 请求处理
+  //        server.connectHandler(new TcpServerHandler());
+  
+          // 示例处理请求
+          server.connectHandler(socket -> {
+              // 处理连接
+              socket.handler(buffer -> {
+                  // 处理接收到的字节数组
+                  byte[] requestData = buffer.getBytes();
+                  // 在这里进行自定义的字节数组处理逻辑，比如解析请求、调用服务、构造响应等
+                  byte[] responseData = handleRequest(requestData);
+                  // 发送响应
+  //                socket.write(Buffer.buffer(responseData));
+              });
+          });
+  
+          // 启动 TCP 服务器并监听指定端口
+          server.listen(port, result -> {
+              if (result.succeeded()) {
+                  System.out.println("TCP server started on port " + port);
+              } else {
+                  System.err.println("Failed to start TCP server: " + result.cause());
+              }
+          });
+      }
+  
+  
+      // 测试运行 tcp 服务器
+      public static void main(String[] args) {
+          new VertxTcpServer().doStart(8888);
+      }
+  }
+  
+  ```
+
+  
 
