@@ -1,34 +1,13 @@
 package com.lhk.kkrpc.server.tcp;
 
 import com.lhk.kkrpc.server.HttpServer;
+import io.vertx.core.Handler;
 import io.vertx.core.Vertx;
+import io.vertx.core.buffer.Buffer;
 import io.vertx.core.net.NetServer;
+import io.vertx.core.parsetools.RecordParser;
 
 public class VertxTcpServer implements HttpServer {
-
-    /**
-     * 示例请求处理逻辑
-     * @param requestData
-     * @return
-     */
-    private byte[] handleRequest(byte[] requestData) {
-        // 在这里编写处理请求的逻辑，根据 requestData 构造响应数据并返回
-        // 这里只是一个示例，实际逻辑需要根据具体的业务需求来实现
-        // 演示半包粘包
-        String correctMessage = "Hello, server!Hello, server!Hello, server!Hello, server!";
-        int correctMessageLength = correctMessage.getBytes().length;
-        System.out.println("正确的接收的数据，length:" + correctMessageLength);
-        if (correctMessageLength < requestData.length){
-            System.out.println("粘包，length = " + requestData.length);
-        }
-        if (correctMessageLength > requestData.length){
-            System.out.println("半包，length = " + requestData.length);
-        }
-        if (correctMessageLength == requestData.length){
-            System.out.println("Received request: " + new String(requestData));
-        }
-        return "Hello, client!".getBytes();
-    }
 
     @Override
     public void doStart(int port) {
@@ -43,15 +22,31 @@ public class VertxTcpServer implements HttpServer {
 
         // 示例处理请求
         server.connectHandler(socket -> {
-            // 处理连接
-            socket.handler(buffer -> {
-                // 处理接收到的字节数组
-                byte[] requestData = buffer.getBytes();
-                // 在这里进行自定义的字节数组处理逻辑，比如解析请求、调用服务、构造响应等
-                byte[] responseData = handleRequest(requestData);
-                // 发送响应
-//                socket.write(Buffer.buffer(responseData));
+
+            String correctMessage = "Hello, server!Hello, server!Hello, server!Hello, server!";
+            int correctMessageLength = correctMessage.getBytes().length;
+
+            // 构造 RecordParser, 为 Parser 指定每次读取固定值长度的内容
+            RecordParser recordParser = RecordParser.newFixed(correctMessageLength);
+            recordParser.setOutput(new Handler<Buffer>() {
+                @Override
+                public void handle(Buffer buffer) {
+                    // 处理接收到的字节数组
+                    byte[] requestData = buffer.getBytes();
+                    String requestString = new String(requestData);
+                    System.out.println("correct message length: " + correctMessageLength);
+                    System.out.println("Received message length: " + requestData.length);
+                    System.out.println("Received message: " + requestString);
+                    if (requestString.equals(correctMessage)){
+                        System.out.println("Received correct message");
+                    }else {
+                        System.out.println("Received incorrect message");
+                    }
+                }
             });
+
+            // 处理连接
+            socket.handler(recordParser);
         });
 
         // 启动 TCP 服务器并监听指定端口

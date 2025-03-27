@@ -869,10 +869,13 @@ nohup /opt/etcdkeeper-v0.7.8/etcdkeeper -p 8889 /opt/etcdkeeper-v0.7.8/etcdkeepe
 
 ### 半包粘包问题
 
+#### 1. 什么是半包粘包
+
 - 半包粘包是 TCP 通信中常见的问题，其本质是由于 TCP 协议不保证消息边界导致的。通过在应用层设计明确的消息格式（如消息头、分隔符等），可以有效解决这一问题
 
   > 半包粘包的概念
   > 在计算机网络通信中，"半包粘包"是描述数据传输过程中的一种现象。为了更好地理解这一概念，可以先了解什么是粘包和拆包。
+  >
   > 1. 粘包
   > 定义：当发送方连续发送多条消息时，接收方可能将这些消息合并成一条消息接收，这种现象称为粘包。
   > 原因：
@@ -920,7 +923,7 @@ nohup /opt/etcdkeeper-v0.7.8/etcdkeeper -p 8889 /opt/etcdkeeper-v0.7.8/etcdkeepe
   > 方法四：组合方案
   > 原理：结合多种方法，例如使用消息头+特殊分隔符，确保消息解析的准确性和灵活性。
 
-#### 1. 演示半包粘包
+#### 2. 演示半包粘包
 
 - 修改 client 端代码，连续发送消息到 server 端
 
@@ -1037,5 +1040,108 @@ nohup /opt/etcdkeeper-v0.7.8/etcdkeeper -p 8889 /opt/etcdkeeper-v0.7.8/etcdkeepe
   
   ```
 
-  
+#### 3. 如何解决半包粘包
 
+- 解决**半包**的核心思路是：在消息头中设置请求体的长度，服务端接收时，判断每次消息的长度是否符合预期，不完整就
+  不读，留到下一次接收到消息时再读取
+
+  ```java
+  if (buffer == null || buffer.length() == 0) {
+      throw new RuntimeException("消息 buffer 为空");
+  }
+  if (buffer.getBytes().length < ProtocolConstant.MESSAGE_HEADER_LENGTH) {
+      throw new RuntimeException("出现了半包问题");
+  }
+  ```
+
+- 解决**粘包**的核心思路也是类似的：每次只读取指定长度的数据，超过长度的留着下一次接收到消息时再读取
+
+  ```java
+  // 解决粘包问题，只读指定长度的数据
+  byte[] bodyBytes = buffer.getBytes(17, 17 + header.getBodyLength());
+  ```
+
+- 听上去简单，但自己实现起来还是比较麻烦的，要记录每次接收到的消息位置，维护字节数组缓存。
+
+#### 4. Vert.x 解决半包粘包问题
+
+- 在 Vert.x 框架中，可以使用内置的 `RecordParser` 完美解决半包粘包。它的作用是：保证下次读取到特定长度的字符
+
+  ```java
+  package com.lhk.kkrpc.server.tcp;
+  
+  import com.lhk.kkrpc.server.HttpServer;
+  import io.vertx.core.Handler;
+  import io.vertx.core.Vertx;
+  import io.vertx.core.buffer.Buffer;
+  import io.vertx.core.net.NetServer;
+  import io.vertx.core.parsetools.RecordParser;
+  
+  public class VertxTcpServer implements HttpServer {
+  
+      @Override
+      public void doStart(int port) {
+          // 创建 Vert.x 实例
+          Vertx vertx = Vertx.vertx();
+  
+          // 创建 TCP 服务器
+          NetServer server = vertx.createNetServer();
+  
+          // 请求处理
+  //        server.connectHandler(new TcpServerHandler());
+  
+          // 示例处理请求
+          server.connectHandler(socket -> {
+  
+              String correctMessage = "Hello, server!Hello, server!Hello, server!Hello, server!";
+              int correctMessageLength = correctMessage.getBytes().length;
+  
+              // 构造 RecordParser, 为 Parser 指定每次读取固定值长度的内容
+              RecordParser recordParser = RecordParser.newFixed(correctMessageLength);
+              recordParser.setOutput(new Handler<Buffer>() {
+                  @Override
+                  public void handle(Buffer buffer) {
+                      // 处理接收到的字节数组
+                      byte[] requestData = buffer.getBytes();
+                      String requestString = new String(requestData);
+                      System.out.println("correct message length: " + correctMessageLength);
+                      System.out.println("Received message length: " + requestData.length);
+                      System.out.println("Received message: " + requestString);
+                      if (requestString.equals(correctMessage)){
+                          System.out.println("Received correct message");
+                      }else {
+                          System.out.println("Received incorrect message");
+                      }
+                  }
+              });
+  
+              // 处理连接
+              socket.handler(recordParser);
+          });
+  
+          // 启动 TCP 服务器并监听指定端口
+          server.listen(port, result -> {
+              if (result.succeeded()) {
+                  System.out.println("TCP server started on port " + port);
+              } else {
+                  System.err.println("Failed to start TCP server: " + result.cause());
+              }
+          });
+      }
+  
+  
+      // 测试运行 tcp 服务器
+      public static void main(String[] args) {
+          new VertxTcpServer().doStart(8888);
+      }
+  }
+  
+  ```
+
+  - `RecordParser.newFixed(correctMessageLength);` 这段代码为 Parser 指定每次读取固定值长度的内容
+
+- 上面的示例发送的是固定长度的消息，因此每次都只要读取固定长度的消息即可。但是实际运用中，消息体的长度是不固定的，所以要通过调整 `RecordParser` 的固定长度（变长）来解决
+
+  - 思路：将读取完整的消息拆分为2次：
+    1.先完整**读取请求头信息**，由于请求头信息长度是固定的，可以使用 `RecordParser` 保证每次都完整读取
+    2.再根据请求头长度信息更改 `RecordParser` 的固定长度，保证完整读取到请求体信息
