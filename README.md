@@ -810,14 +810,14 @@ nohup /opt/etcdkeeper-v0.7.8/etcdkeeper -p 8889 /opt/etcdkeeper-v0.7.8/etcdkeepe
   
           // todo 后续做负载均衡
           // 暂时先取第一个
-          ServiceMetaInfo selectedServiceMetaInfo = serviceMetaInfoList.get(0);
+          ServiceMetaInfo serviceMetaInfo = serviceMetaInfoList.get(0);
   
           // 发送 tcp 请求
           Vertx vertx = Vertx.vertx();
           NetClient netClient = vertx.createNetClient();
           // 由于 vertx 发送的是异步的 tcp 请求，所以需要使用 CompletableFuture 转异步为同步更方便获取请求结果
           CompletableFuture<RpcResponse> responseCompletableFuture = new CompletableFuture<>();
-          netClient.connect(selectedServiceMetaInfo.getServicePort(), selectedServiceMetaInfo.getServiceHost(),
+          netClient.connect(serviceMetaInfo.getServicePort(), serviceMetaInfo.getServiceHost(),
                   (connectResult) -> {
                       // 判断是否连接成功
                       if (connectResult.succeeded()) {
@@ -1267,4 +1267,305 @@ nohup /opt/etcdkeeper-v0.7.8/etcdkeeper -p 8889 /opt/etcdkeeper-v0.7.8/etcdkeepe
   }
   ```
 
-  
+#### 5. 封装半包粘包处理器
+
+- 上面的代码只是做了测试，并未对自定义 rpc 框架中的半包粘包问题进行处理
+- 且解决半包粘包问题还是有一定的代码量的，由于 `ServiceProxy`(消费者）和请求 `Handler` (提供者）都
+  需要接受 `Buffer`，所以都需要半包粘包问题处理，那就需要对代码进行封装复用了
+  - 可以使用设计模式中的**装饰者模式**，使用 `RecordParser` 对原有的 `Buffer` 处理器的能力进行增强
+  - 装饰者模式可以简单理解为给对象穿装备，增强对象的能力
+
+```java
+package com.lhk.kkrpc.server.tcp;
+
+import com.lhk.kkrpc.protocol.ProtocolConstant;
+import io.vertx.core.Handler;
+import io.vertx.core.buffer.Buffer;
+import io.vertx.core.parsetools.RecordParser;
+
+/**
+ * 装饰者模式（使用 recordParser 对原有的 buffer 处理能力进行增强）
+ */
+public class TcpBufferHandlerWrapper implements Handler<Buffer> {
+
+    private final RecordParser recordParser;
+
+    public TcpBufferHandlerWrapper(Handler<Buffer> bufferHandler) {
+        recordParser = initRecordParser(bufferHandler);
+    }
+
+    @Override
+    public void handle(Buffer buffer) {
+        recordParser.handle(buffer);
+    }
+
+    /**
+     * 构造 RecordParser
+     * @param bufferHandler
+     * @return RecordParser
+     */
+    private RecordParser initRecordParser(Handler<Buffer> bufferHandler) {
+        // 构造 parser
+        RecordParser parser = RecordParser.newFixed(ProtocolConstant.MESSAGE_HEADER_LENGTH);
+
+        parser.setOutput(new Handler<Buffer>() {
+            // 初始化
+            int size = -1;
+            // 一次完整的读取（头 + 体）
+            Buffer resultBuffer = Buffer.buffer();
+
+            @Override
+            public void handle(Buffer buffer) {
+                if (-1 == size) {
+                    // 读取消息体长度
+                    size = buffer.getInt(13);
+                    parser.fixedSizeMode(size);
+                    // 写入头信息到结果
+                    resultBuffer.appendBuffer(buffer);
+                } else {
+                    // 写入体信息到结果
+                    resultBuffer.appendBuffer(buffer);
+                    // 已拼接为完整 Buffer，执行处理
+                    bufferHandler.handle(resultBuffer);
+                    // 重置一轮
+                    parser.fixedSizeMode(ProtocolConstant.MESSAGE_HEADER_LENGTH);
+                    size = -1;
+                    resultBuffer = Buffer.buffer();
+                }
+            }
+        });
+
+        return parser;
+    }
+}
+```
+
+#### 6. 调整业务代码
+
+1. 修改 tcp 请求处理器
+
+   - 使用 `TcpBufferHandlerWrapper` 来封装之前处理请求的代码，请求逻辑不用变
+   - 其实就是使用一个 `Wrapper` 对象包装了之前的代码，就解决了半包粘包，这就是**装饰者模式**的妙用！
+
+   ```java
+   package com.lhk.kkrpc.server.tcp;
+   
+   import com.lhk.kkrpc.model.RpcRequest;
+   import com.lhk.kkrpc.model.RpcResponse;
+   import com.lhk.kkrpc.protocol.ProtocolMessage;
+   import com.lhk.kkrpc.protocol.ProtocolMessageDecoder;
+   import com.lhk.kkrpc.protocol.ProtocolMessageEncoder;
+   import com.lhk.kkrpc.protocol.ProtocolMessageTypeEnum;
+   import com.lhk.kkrpc.registry.LocalRegistry;
+   import io.vertx.core.Handler;
+   import io.vertx.core.buffer.Buffer;
+   import io.vertx.core.net.NetSocket;
+   
+   import java.io.IOException;
+   import java.lang.reflect.Method;
+   
+   /**
+    * TCP 请求处理器处理器（服务端调用）
+    */
+   public class TcpServerHandler implements Handler<NetSocket> {
+   
+       @Override
+       public void handle(NetSocket netSocket) {
+           // BufferHandlerWrapper 对原生 Handler<Buffer> 进行了增强，用于处理粘包拆包问题
+           TcpBufferHandlerWrapper tcpBufferHandlerWrapper = new TcpBufferHandlerWrapper(buffer -> {
+               // 接受请求，解码
+               ProtocolMessage<RpcRequest> protocolMessage;
+               try {
+                   protocolMessage = (ProtocolMessage<RpcRequest>) ProtocolMessageDecoder.decode(buffer);
+               } catch (IOException e) {
+                   throw new RuntimeException("协议消息解码错误");
+               }
+               RpcRequest rpcRequest = protocolMessage.getBody();
+   
+               // 处理请求
+               // 构造响应结果对象
+               RpcResponse rpcResponse = new RpcResponse();
+               try {
+                   // 获取要调用的服务实现类，通过反射调用
+                   Class<?> implClass = LocalRegistry.get(rpcRequest.getServiceName());
+                   Method method = implClass.getMethod(rpcRequest.getMethodName(), rpcRequest.getParameterTypes());
+                   Object result = method.invoke(implClass.newInstance(), rpcRequest.getArgs());
+                   // 封装返回结果
+                   rpcResponse.setData(result);
+                   rpcResponse.setDataType(method.getReturnType());
+                   rpcResponse.setMessage("ok");
+               } catch (Exception e) {
+                   e.printStackTrace();
+                   rpcResponse.setMessage(e.getMessage());
+                   rpcResponse.setException(e);
+               }
+   
+               // 发送响应，编码
+               ProtocolMessage.Header header = protocolMessage.getHeader();
+               header.setType((byte) ProtocolMessageTypeEnum.RESPONSE.getKey());
+               ProtocolMessage<RpcResponse> responseProtocolMessage = new ProtocolMessage<>(header, rpcResponse);
+               try {
+                   Buffer encode = ProtocolMessageEncoder.encode(responseProtocolMessage);
+                   netSocket.write(encode);
+               } catch (IOException e) {
+                   throw new RuntimeException("协议消息编码错误");
+               }
+           });
+           // 处理连接
+           netSocket.handler(tcpBufferHandlerWrapper);
+       }
+   }
+   ```
+
+2. 修改客户端发送请求后接受到响应的代码
+
+   - 把`ServiceProxy`中所有的请求响应逻辑提取出来，封装为单独的 `VertxTcpClient` 类，并使用 `TcpBufferHandlerWrapper `对响应的代码进行封装，解决响应的半包粘包问题
+
+     ```java
+     package com.lhk.kkrpc.server.tcp;
+     
+     import cn.hutool.core.util.IdUtil;
+     import com.lhk.kkrpc.RpcApplication;
+     import com.lhk.kkrpc.model.RpcRequest;
+     import com.lhk.kkrpc.model.RpcResponse;
+     import com.lhk.kkrpc.model.ServiceMetaInfo;
+     import com.lhk.kkrpc.protocol.*;
+     import io.vertx.core.Vertx;
+     import io.vertx.core.buffer.Buffer;
+     import io.vertx.core.net.NetClient;
+     import io.vertx.core.net.NetSocket;
+     
+     import java.io.IOException;
+     import java.util.concurrent.CompletableFuture;
+     import java.util.concurrent.ExecutionException;
+     
+     public class VertxTcpClient {
+         /**
+          * rpc 框架用于发送 tcp 请求的客户端
+          */
+         public static RpcResponse doRequest(RpcRequest rpcRequest, ServiceMetaInfo serviceMetaInfo) throws ExecutionException, InterruptedException {
+             // 发送 tcp 请求
+             Vertx vertx = Vertx.vertx();
+             NetClient netClient = vertx.createNetClient();
+             // 由于 vertx 发送的是异步的 tcp 请求，所以需要使用 CompletableFuture 转异步为同步更方便获取请求结果
+             CompletableFuture<RpcResponse> responseCompletableFuture = new CompletableFuture<>();
+             netClient.connect(serviceMetaInfo.getServicePort(), serviceMetaInfo.getServiceHost(),
+                     (connectResult) -> {
+                         // 判断是否连接成功
+                         if (connectResult.succeeded()) {
+                             System.out.println("Connected to tcp server succeeded");
+                             // 获取 netSocket 连接,用于发送数据
+                             NetSocket netSocket = connectResult.result();
+                             // 构造 tcp 请求消息
+                             ProtocolMessage<RpcRequest> rpcRequesttProtocolMessage = new ProtocolMessage<>();
+                             ProtocolMessage.Header header = new ProtocolMessage.Header();
+                             header.setMagic(ProtocolConstant.PROTOCOL_MAGIC);
+                             header.setVersion(ProtocolConstant.PROTOCOL_VERSION);
+                             // 指定序列化器
+                             header.setSerializer((byte) ProtocolMessageSerializerEnum.getEnumByValue(RpcApplication.getRpcConfig().getSerializer()).getKey());
+                             header.setType((byte) ProtocolMessageTypeEnum.REQUEST.getKey());
+                             header.setRequestId(IdUtil.getSnowflakeNextId());
+                             rpcRequesttProtocolMessage.setHeader(header);
+                             rpcRequesttProtocolMessage.setBody(rpcRequest);
+                             //编码请求消息
+                             try {
+                                 Buffer encodeBuffer = ProtocolMessageEncoder.encode(rpcRequesttProtocolMessage);
+                                 netSocket.write(encodeBuffer);
+                             } catch (IOException e) {
+                                 throw new RuntimeException("tcp 请求发送失败：消息编码错误/n" + e);
+                             }
+                             // 接收响应消息，使用 TcpBufferHandlerWrapper 对响应的代码进行封装，解决响应的半包粘包问题
+                             TcpBufferHandlerWrapper tcpBufferHandlerWrapper = new TcpBufferHandlerWrapper(buffer -> {
+                                 try {
+                                     try {
+                                         ProtocolMessage<RpcResponse> rpcResponseProtocolMessage = (ProtocolMessage<RpcResponse>) ProtocolMessageDecoder.decode(buffer);
+                                         // 响应完成的时候将数据保存在 CompletableFuture 中
+                                         responseCompletableFuture.complete(rpcResponseProtocolMessage.getBody());
+                                     } catch (IOException e) {
+                                         throw new RuntimeException("接收 tcp 响应失败：消息解码错误/n" + e);
+                                     }
+                                 }
+                             });
+                             netSocket.handler(tcpBufferHandlerWrapper);
+                         }else {
+                             System.out.println("Connected to tcp server failed");
+                         }
+                     });
+             // 阻塞，直到响应完成，才会继续执行获取数据
+             RpcResponse rpcResponse = responseCompletableFuture.get();
+             // 关闭连接并返回响应数据
+             netClient.close();
+             return rpcResponse;
+         }
+     }
+     ```
+
+   - 调整 `ServiceProxy` 类的代码
+
+     ```java
+     package com.lhk.kkrpc.proxy;
+     
+     import cn.hutool.core.collection.CollUtil;
+     import com.lhk.kkrpc.RpcApplication;
+     import com.lhk.kkrpc.config.RpcConfig;
+     import com.lhk.kkrpc.constant.RpcConstant;
+     import com.lhk.kkrpc.model.RpcRequest;
+     import com.lhk.kkrpc.model.RpcResponse;
+     import com.lhk.kkrpc.model.ServiceMetaInfo;
+     import com.lhk.kkrpc.registry.Registry;
+     import com.lhk.kkrpc.registry.RegistryFactory;
+     import com.lhk.kkrpc.server.tcp.VertxTcpClient;
+     
+     import java.lang.reflect.InvocationHandler;
+     import java.lang.reflect.Method;
+     import java.util.List;
+     
+     /**
+      * 服务代理（JDK 动态代理）（客户端发送请求时对请求进行处理后再发送）
+      */
+     public class ServiceProxy implements InvocationHandler {
+     
+         /**
+          * 调用代理发送请求
+          *
+          * @return
+          * @throws Throwable
+          */
+         @Override
+         public Object invoke(Object proxy, Method method, Object[] args) {
+             // 构造请求
+             String serviceName = method.getDeclaringClass().getName();
+             RpcRequest rpcRequest = RpcRequest.builder()
+                     .serviceName(serviceName)
+                     .methodName(method.getName())
+                     .parameterTypes(method.getParameterTypes())
+                     .args(args)
+                     .build();
+             try {
+                 // 从注册中心获取服务提供者请求地址
+                 RpcConfig rpcConfig = RpcApplication.getRpcConfig();
+                 Registry registry = RegistryFactory.getInstance(rpcConfig.getRegistryConfig().getRegistry());
+                 ServiceMetaInfo serviceMetaInfo = new ServiceMetaInfo();
+                 serviceMetaInfo.setServiceName(serviceName);
+                 serviceMetaInfo.setServiceVersion(RpcConstant.DEFAULT_SERVICE_VERSION);
+                 List<ServiceMetaInfo> serviceMetaInfoList = registry.serviceDiscovery(serviceMetaInfo.getServiceKey());
+                 if (CollUtil.isEmpty(serviceMetaInfoList)) {
+                     throw new RuntimeException("暂无服务地址");
+                 }
+                 // todo 后续做负载均衡
+                 // 暂时先取第一个
+                 ServiceMetaInfo selectedServiceMetaInfo = serviceMetaInfoList.get(0);
+                 // 发送 tcp 请求
+                 RpcResponse rpcResponse = VertxTcpClient.doRequest(rpcRequest, selectedServiceMetaInfo);
+                 return rpcResponse.getData();
+             }catch (Exception e){
+                 throw new RuntimeException("rpc 服务调用失败");
+             }
+         }
+     }
+     ```
+
+3. 修改完毕后运行 `ProviderExample` 和 `ConsumerExample` 进行测试
+
+
+

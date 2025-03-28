@@ -14,12 +14,15 @@ import io.vertx.core.net.NetSocket;
 import java.io.IOException;
 import java.lang.reflect.Method;
 
+/**
+ * TCP 请求处理器处理器（服务端接收到请求对请求进行处理）
+ */
 public class TcpServerHandler implements Handler<NetSocket> {
 
     @Override
     public void handle(NetSocket netSocket) {
-        // 处理连接
-        netSocket.handler(buffer -> {
+        // BufferHandlerWrapper 对原生 Handler<Buffer> 进行了增强，用于处理粘包拆包问题
+        TcpBufferHandlerWrapper tcpBufferHandlerWrapper = new TcpBufferHandlerWrapper(buffer -> {
             // 接受请求，解码
             ProtocolMessage<RpcRequest> protocolMessage;
             try {
@@ -58,5 +61,7 @@ public class TcpServerHandler implements Handler<NetSocket> {
                 throw new RuntimeException("协议消息编码错误");
             }
         });
+        // 处理连接
+        netSocket.handler(tcpBufferHandlerWrapper);
     }
 }
