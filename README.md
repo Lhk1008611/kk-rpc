@@ -1571,12 +1571,12 @@ public class TcpBufferHandlerWrapper implements Handler<Buffer> {
 
 
 
-## 负载均衡
+# 负载均衡
 
 - 目前这个 rpc 框架实现了服务消费者从 etcd 注册中心获取服务提供者注册的信息，当然同一个服务可能会有多个服务提供者，但是目前我们消费者始终读取了第一个服务提供者节点发起调用，不仅会增大单个节点的压力，而且没有利用好其他节点的资源。
 - 因此我们完全可以从服务提供者节点中，选择一个服务提供者发起请求，而不是每次都请求同一个服务提供者，这个操作就叫做 **负载均衡**。
 
-### 什么是负载均衡
+## 什么是负载均衡
 
 - 何为**负载**?可以把负载理解为要处理的工作和压力，比如网络请求、事务、数据处理任务等
 - 何为**均衡**?把工作和压力平均地分配给多个工作者，从而分摊每个工作者的压力，保证大家正常工作
@@ -1585,33 +1585,33 @@ public class TcpBufferHandlerWrapper implements Handler<Buffer> {
 
 
 
-#### 常见的负载均衡算法
+## 常见的负载均衡算法
 
-#### 1. 轮询
+### 1. 轮询
 
 - 轮询(Round Robin): 按照循环的顺序将请求分配给每个服务器，适用于各服务器性能相近的情况
 
-#### 2. 随机
+### 2. 随机
 
 - 随机(Random): 随机选择一个服务器来处理请求，适用于服务器性能相近且负载均匀的情况
 
-#### 3. 加权轮询
+### 3. 加权轮询
 
 - 3)加权轮询(Weighted Round Robin): 适用于服务器性能不均的情况。根据服务器的性能或权重分配请求，性能更好的服务器会获得更多的请求
 
-#### 4. 加权随机
+### 4. 加权随机
 
 - 加权随机(Weighted Random): 根据服务器的权重随机选择一个服务器处理请求，适用于服务器性能不均的情况
 
-#### 5. 最小连接数
+### 5. 最小连接数
 
 - 最小连接数(Least Connections): 选择当前连接数最少的服务器来处理请求，适用于长连接场景
 
-#### 6. ip hash
+### 6. ip hash
 
 - IP Hash: 根据客户端 IP 地址的哈希值选择服务器处理请求，确保同一客户端的请求始终被分配到同一台服务器上，适用于需要保持会话一致性的场景，当然，也可以根据请求中的其他参数进行 Hash，比如根据请求接口的地址路由到不同的服务器节点
 
-#### 一致性 hash
+### 一致性 hash
 
 - 一致性哈希(Consistent Hashing)是一种经典的哈希算法，用于**将请求分配到多个节点或服务器上**，所以非常适用于负载均衡。
   - 它的核心思想是将整个哈希值空间划分成一个环状结构，每个节点或服务器在环上占据一个位置，每个请求根据其哈希值映射到环上的一个点，然后顺时针寻找第一个大于或等于该哈希值的节点，将请求路由到该节点上
@@ -1620,7 +1620,7 @@ public class TcpBufferHandlerWrapper implements Handler<Buffer> {
     - 如果是轮询取模算法，只要节点数变了，很有可能大多数服务器处理的请求都要发生节点的变化，对系统的影响巨大
   - **倾斜问题**: 通过虚拟节点的引入，将每个物理节点映射到多个虚拟节点上，使得节点在哈希环上的分布更加均匀，减少了节点间的负载差异。
 
-### 开发实现
+## 开发实现
 
 ### 一、多种负载均衡器的实现
 
@@ -1944,7 +1944,145 @@ public class LoadBalancerFactory {
   }
   ```
 
+### 三、 应用负载均衡器
 
+- 修改 `ServiceProxy` 的代码，将获取服务节点的逻辑改为调用负载均衡器获取一个服务节点
+
+  ```java
+  package com.lhk.kkrpc.proxy;
+  
+  import cn.hutool.core.collection.CollUtil;
+  import com.lhk.kkrpc.RpcApplication;
+  import com.lhk.kkrpc.config.RpcConfig;
+  import com.lhk.kkrpc.constant.RpcConstant;
+  import com.lhk.kkrpc.loadbalancer.LoadBalancer;
+  import com.lhk.kkrpc.loadbalancer.LoadBalancerFactory;
+  import com.lhk.kkrpc.model.RpcRequest;
+  import com.lhk.kkrpc.model.RpcResponse;
+  import com.lhk.kkrpc.model.ServiceMetaInfo;
+  import com.lhk.kkrpc.registry.Registry;
+  import com.lhk.kkrpc.registry.RegistryFactory;
+  import com.lhk.kkrpc.server.tcp.VertxTcpClient;
+  
+  import java.lang.reflect.InvocationHandler;
+  import java.lang.reflect.Method;
+  import java.util.HashMap;
+  import java.util.List;
+  
+  /**
+   * 服务代理（JDK 动态代理）（客户端发送请求时对请求进行处理后再发送）
+   */
+  public class ServiceProxy implements InvocationHandler {
+  
+      /**
+       * 调用代理发送请求
+       *
+       * @return
+       * @throws Throwable
+       */
+      @Override
+      public Object invoke(Object proxy, Method method, Object[] args) {
+          // 构造请求
+          String serviceName = method.getDeclaringClass().getName();
+          RpcRequest rpcRequest = RpcRequest.builder()
+                  .serviceName(serviceName)
+                  .methodName(method.getName())
+                  .parameterTypes(method.getParameterTypes())
+                  .args(args)
+                  .build();
+          try {
+              // 从注册中心获取服务提供者请求地址
+              RpcConfig rpcConfig = RpcApplication.getRpcConfig();
+              Registry registry = RegistryFactory.getInstance(rpcConfig.getRegistryConfig().getRegistry());
+              ServiceMetaInfo serviceMetaInfo = new ServiceMetaInfo();
+              serviceMetaInfo.setServiceName(serviceName);
+              serviceMetaInfo.setServiceVersion(RpcConstant.DEFAULT_SERVICE_VERSION);
+              List<ServiceMetaInfo> serviceMetaInfoList = registry.serviceDiscovery(serviceMetaInfo.getServiceKey());
+              if (CollUtil.isEmpty(serviceMetaInfoList)) {
+                  throw new RuntimeException("暂无服务地址");
+              }
+              // 负载均衡
+              LoadBalancer loadBalancer = LoadBalancerFactory.getInstance(rpcConfig.getLoadBalancer());
+              HashMap<String, Object> requestParams = new HashMap<>();
+              requestParams.put("methodName", rpcRequest.getMethodName());
+              ServiceMetaInfo selectedServiceMetaInfo = loadBalancer.select(requestParams, serviceMetaInfoList);
+  
+              // 发送 tcp 请求
+              RpcResponse rpcResponse = VertxTcpClient.doRequest(rpcRequest, selectedServiceMetaInfo);
+              return rpcResponse.getData();
+          }catch (Exception e){
+              throw new RuntimeException("rpc 服务调用失败");
+          }
+      }
+  }
+  ```
+
+- 上述代码中，我们给负载均衡器传入了一个 `requestParams` ，并且将请求方法名作为参数放到了 HashMap 中。如果使用的是一致性 Hash 算法，那么会根据 `requestParams` 计算 Hash 值，调用相同方法的请求 Hash 值肯定相同，所以总会请求到同一个服务器节点上
+
+### 四、测试
+
+1. 单元测试类
+
+   ```java
+   package com.lhk.kkrpc.loadbalancer;
+   
+   import com.lhk.kkrpc.model.ServiceMetaInfo;
+   import org.junit.Assert;
+   import org.junit.Test;
+   
+   import java.util.Arrays;
+   import java.util.HashMap;
+   import java.util.List;
+   import java.util.Map;
+   
+   import static org.junit.Assert.*;
+   
+   /**
+    * 负载均衡器测试
+    */
+   public class LoadBalancerTest {
+   
+       final LoadBalancer loadBalancer = new ConsistentHashLoadBalancer();
+   
+       @Test
+       public void select() {
+           // 请求参数
+           Map<String, Object> requestParams = new HashMap<>();
+           requestParams.put("methodName", "apple");
+           // 服务列表
+           ServiceMetaInfo serviceMetaInfo1 = new ServiceMetaInfo();
+           serviceMetaInfo1.setServiceName("myService");
+           serviceMetaInfo1.setServiceVersion("1.0");
+           serviceMetaInfo1.setServiceHost("localhost");
+           serviceMetaInfo1.setServicePort(1234);
+           ServiceMetaInfo serviceMetaInfo2 = new ServiceMetaInfo();
+           serviceMetaInfo2.setServiceName("myService");
+           serviceMetaInfo2.setServiceVersion("1.0");
+           serviceMetaInfo2.setServiceHost("lhk.rpc");
+           serviceMetaInfo2.setServicePort(80);
+           List<ServiceMetaInfo> serviceMetaInfoList = Arrays.asList(serviceMetaInfo1, serviceMetaInfo2);
+           // 连续调用 3 次
+           ServiceMetaInfo serviceMetaInfo = loadBalancer.select(requestParams, serviceMetaInfoList);
+           System.out.println(serviceMetaInfo);
+           Assert.assertNotNull(serviceMetaInfo);
+           serviceMetaInfo = loadBalancer.select(requestParams, serviceMetaInfoList);
+           System.out.println(serviceMetaInfo);
+           Assert.assertNotNull(serviceMetaInfo);
+           serviceMetaInfo = loadBalancer.select(requestParams, serviceMetaInfoList);
+           System.out.println(serviceMetaInfo);
+           Assert.assertNotNull(serviceMetaInfo);
+       }
+   }
+   ```
+
+2. 首先在不同的端口启动 2 个服务提供者，然后启动服务消费者项目，通过 Debug 或者控制台输出来观察每次请求的节点地址
+
+### 五、 扩展
+
+1. 实现更多不同算法的负载均衡器
+   - 参考思路: 比如**最少活跃数负载均衡器**，选择当前正在处理请求的数量最少的服务提供者
+2. 自定义一致性 Hash 算法中的 Hash 算法
+   - 参考思路: 比如**根据请求客户端的 IP 地址来计算 Hash 值**，保证同 IP 的请求发送给相同的服务提供者
 
 
 
