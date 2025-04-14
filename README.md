@@ -1569,3 +1569,140 @@ public class TcpBufferHandlerWrapper implements Handler<Buffer> {
 
 
 
+
+
+## 负载均衡
+
+- 目前这个 rpc 框架实现了服务消费者从 etcd 注册中心获取服务提供者注册的信息，当然同一个服务可能会有多个服务提供者，但是目前我们消费者始终读取了第一个服务提供者节点发起调用，不仅会增大单个节点的压力，而且没有利用好其他节点的资源。
+- 因此我们完全可以从服务提供者节点中，选择一个服务提供者发起请求，而不是每次都请求同一个服务提供者，这个操作就叫做 **负载均衡**。
+
+### 什么是负载均衡
+
+- 何为**负载**?可以把负载理解为要处理的工作和压力，比如网络请求、事务、数据处理任务等
+- 何为**均衡**?把工作和压力平均地分配给多个工作者，从而分摊每个工作者的压力，保证大家正常工作
+- 所以，负载均衡是一种用来**分配网络或计算负载到多个资源上**的技术。它的目的是确保每个资源都能够有效地处理负载、增加系统的并发量、避免某些资源过载而导致性能下降或服务不可用的情况
+- 常用的负载均衡实现技术有 Nginx(七层负载均衡)、LVS(四层负载均衡)等
+
+
+
+#### 常见的负载均衡算法
+
+#### 1. 轮询
+
+- 轮询(Round Robin): 按照循环的顺序将请求分配给每个服务器，适用于各服务器性能相近的情况
+
+#### 2. 随机
+
+- 随机(Random): 随机选择一个服务器来处理请求，适用于服务器性能相近且负载均匀的情况
+
+#### 3. 加权轮询
+
+- 3)加权轮询(Weighted Round Robin): 适用于服务器性能不均的情况。根据服务器的性能或权重分配请求，性能更好的服务器会获得更多的请求
+
+#### 4. 加权随机
+
+- 加权随机(Weighted Random): 根据服务器的权重随机选择一个服务器处理请求，适用于服务器性能不均的情况
+
+#### 5. 最小连接数
+
+- 最小连接数(Least Connections): 选择当前连接数最少的服务器来处理请求，适用于长连接场景
+
+#### 6. ip hash
+
+- IP Hash: 根据客户端 IP 地址的哈希值选择服务器处理请求，确保同一客户端的请求始终被分配到同一台服务器上，适用于需要保持会话一致性的场景，当然，也可以根据请求中的其他参数进行 Hash，比如根据请求接口的地址路由到不同的服务器节点
+
+#### 一致性 hash
+
+- 一致性哈希(Consistent Hashing)是一种经典的哈希算法，用于**将请求分配到多个节点或服务器上**，所以非常适用于负载均衡。
+  - 它的核心思想是将整个哈希值空间划分成一个环状结构，每个节点或服务器在环上占据一个位置，每个请求根据其哈希值映射到环上的一个点，然后顺时针寻找第一个大于或等于该哈希值的节点，将请求路由到该节点上
+- 一致性哈希还解决了 **节点下线** 和 **倾斜问题**
+  - **节点下线**: 当某个节点下线时，该节点上的负载（请求）会被平均分摊到其他节点上，而不会影响到整个系统的稳定性，因为只有该节点的部分请求会受到影响
+    - 如果是轮询取模算法，只要节点数变了，很有可能大多数服务器处理的请求都要发生节点的变化，对系统的影响巨大
+  - **倾斜问题**: 通过虚拟节点的引入，将每个物理节点映射到多个虚拟节点上，使得节点在哈希环上的分布更加均匀，减少了节点间的负载差异。
+
+### 开发实现
+
+### 1. 多种负载均衡器的实现
+
+- 对于负载均衡器的实现，可以参考 Nginx 的负载均衡器的实现
+
+#### 1. 通用接口编写
+
+- 建立 `loadbalancer` 包，编写一个负载均衡器的通用接口
+  - 提供一个`select()` 选择服务方法，接受请求参数和可用服务列表，可以根据这些信息进行节点的选择
+
+  ```java
+  package com.lhk.kkrpc.loadbalancer;
+  
+  import com.lhk.kkrpc.model.ServiceMetaInfo;
+  
+  import java.util.List;
+  import java.util.Map;
+  
+  /**
+   * 负载均衡器（消费端使用）
+   */
+  public interface LoadBalancer {
+  
+      /**
+       * 选择服务调用
+       *
+       * @param requestParams       请求参数
+       * @param serviceMetaInfoList 可用服务列表
+       * @return
+       */
+      ServiceMetaInfo select(Map<String, Object> requestParams, List<ServiceMetaInfo> serviceMetaInfoList);
+  }
+  ```
+
+  
+
+#### 2. 轮询负载均衡器的实现
+
+- 使用 JUC 包的 `AtomicInteger` 实现原子计数器，防止并发冲突问题
+
+  ```java
+  package com.lhk.kkrpc.loadbalancer;
+  
+  import com.lhk.kkrpc.model.ServiceMetaInfo;
+  
+  import java.util.List;
+  import java.util.Map;
+  import java.util.concurrent.atomic.AtomicInteger;
+  
+  /**
+   * 轮询负载均衡器
+   */
+  public class RoundRobinLoadBalancer implements LoadBalancer {
+  
+      /**
+       * 当前轮询的下标
+       * 使用 JUC 包的 AtomicInteger 实现原子计数器，防止并发冲突问题
+       */
+      private final AtomicInteger currentIndex = new AtomicInteger(0);
+  
+      @Override
+      public ServiceMetaInfo select(Map<String, Object> requestParams, List<ServiceMetaInfo> serviceMetaInfoList) {
+          if (serviceMetaInfoList.isEmpty()) {
+              return null;
+          }
+          // 只有一个服务，无需轮询
+          int size = serviceMetaInfoList.size();
+          if (size == 1) {
+              return serviceMetaInfoList.get(0);
+          }
+          // 取模算法轮询
+          int index = currentIndex.getAndIncrement() % size; // 加一取模
+          return serviceMetaInfoList.get(index);
+      }
+  }
+  ```
+
+
+
+
+
+
+
+
+
