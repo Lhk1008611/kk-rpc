@@ -1622,7 +1622,7 @@ public class TcpBufferHandlerWrapper implements Handler<Buffer> {
 
 ### 开发实现
 
-### 1. 多种负载均衡器的实现
+### 一、多种负载均衡器的实现
 
 - 对于负载均衡器的实现，可以参考 Nginx 的负载均衡器的实现
 
@@ -1801,6 +1801,156 @@ public class TcpBufferHandlerWrapper implements Handler<Buffer> {
   ```
 
   - 注意：每次调用负载均衡器时，都会重新构造 Hash 环，这是为了能够即时处理节点的变化，重新分配下线节点的请求
+
+
+
+### 二、 实现支持配置和扩展负载均衡器（工厂模式 + SPI）
+
+- 一个成熟的 RPC 框架可能会**支持多个负载均衡器**，像序列化器和注册中心一样，能够让开发者能够填写配置来指定负载均衡器，并且支持自定义负载均衡器，让框架更易用、更利于扩展
+  - 要实现这点，开发方式和序列化器、注册中心都是一样的，都可以使用**工厂模式**创建对象、使用 **SPI 机制**动态加载自定义的注册中心
+
+#### 1. 负载均衡器常量
+
+- 列举出框架支持的所有负载均衡器键名
+
+  ```java
+  package com.lhk.kkrpc.loadbalancer;
+  
+  /**
+   * 负载均衡器键名常量
+   */
+  public interface LoadBalancerKeys {
+  
+      /**
+       * 轮询
+       */
+      String ROUND_ROBIN = "roundRobin";
+  
+      /**
+       * 随机
+       */
+      String RANDOM = "random";
+  
+      /**
+       * 一致性哈希
+       */
+      String CONSISTENT_HASH = "consistentHash";
+  
+  }
+  ```
+
+
+
+#### 2. 使用工厂模式，实现根据 key 从 SPI 获取指定负载均衡器对象实例
+
+```java
+package com.lhk.kkrpc.loadbalancer;
+
+import com.lhk.kkrpc.spi.SpiLoader;
+
+/**
+ * 负载均衡器工厂（工厂模式，用于获取负载均衡器对象）
+ */
+public class LoadBalancerFactory {
+
+    static {
+        SpiLoader.load(LoadBalancer.class);
+    }
+
+    /**
+     * 默认负载均衡器
+     */
+    private static final LoadBalancer DEFAULT_LOAD_BALANCER = new RoundRobinLoadBalancer();
+
+    /**
+     * 获取实例
+     *
+     * @param key
+     * @return
+     */
+    public static LoadBalancer getInstance(String key) {
+        return SpiLoader.getInstance(LoadBalancer.class, key);
+    }
+}
+```
+
+#### 3. 编写负载均衡器的 SPI 配置文件
+
+- 在 `META-INF` 的 `rpc/system` 目录下编写负载均衡器接口的 SPI 配置文件，文件名称为 `com.lhk.kkrpc.loadbalance
+  r.LoadBalancer`
+
+  ```java
+  roundRobin=com.lhk.kkrpc.loadbalancer.RoundRobinLoadBalancer
+  random=com.lhk.kkrpc.loadbalancer.RandomLoadBalancer
+  consistentHash=com.lhk.kkrpc.loadbalancer.ConsistentHashLoadBalancer
+  ```
+
+#### 4. 新增负载均衡器的全局配置
+
+- 在 `RpcConfig` 全局配置中新增负载均衡器的配置
+
+  ```java
+  package com.lhk.kkrpc.config;
+  
+  import com.lhk.kkrpc.loadbalancer.LoadBalancerKeys;
+  import com.lhk.kkrpc.serializer.SerializerKeys;
+  import lombok.Data;
+  
+  /**
+   * RPC 框架配置
+   */
+  @Data
+  public class RpcConfig {
+  
+      /**
+       * 名称
+       */
+      private String name = "kk-rpc";
+  
+      /**
+       * 版本号
+       */
+      private String version = "1.0";
+  
+      /**
+       * 服务器主机名
+       */
+      private String serverHost = "localhost";
+      
+      /**
+       * 服务器端口号
+       */
+      private Integer serverPort = 8888;
+  
+      /**
+       * 模拟调用
+       */
+      private boolean mock = false;
+  
+      /**
+       * 注册中心配置
+       */
+      private RegistryConfig registryConfig = new RegistryConfig();
+  
+      /**
+       * 序列化器
+       */
+      private String serializer = SerializerKeys.JDK;
+  
+      /**
+       * 负载均衡器
+       */
+      private String loadBalancer = LoadBalancerKeys.ROUND_ROBIN;
+  }
+  ```
+
+
+
+
+
+
+
+
 
 
 

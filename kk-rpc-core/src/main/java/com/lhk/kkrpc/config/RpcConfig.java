@@ -1,5 +1,6 @@
 package com.lhk.kkrpc.config;
 
+import com.lhk.kkrpc.loadbalancer.LoadBalancerKeys;
 import com.lhk.kkrpc.serializer.SerializerKeys;
 import lombok.Data;
 
@@ -43,5 +44,10 @@ public class RpcConfig {
      * 序列化器
      */
     private String serializer = SerializerKeys.JDK;
+
+    /**
+     * 负载均衡器
+     */
+    private String loadBalancer = LoadBalancerKeys.ROUND_ROBIN;
 }
 
