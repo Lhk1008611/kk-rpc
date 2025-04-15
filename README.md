@@ -2086,6 +2086,230 @@ public class LoadBalancerFactory {
 
 
 
+# 重试机制
+
+## 需求分析
+
+- 目前，使用 RPC 框架的服务消费者调用接口失败时，就会直接报错
+- 但是由于调用接口失败可能有很多原因
+  - 有时可能是服务提供者返回了错误
+  - 有时可能只是网络不稳定
+  - 或服务提供者重启等临时性问题。
+- 考虑这些情况，因此需要设计服务消费者拥有自动重试的能力，提高系统的可用性
+
+
+
+## 设计方案
+
+### 重试机制
+
+- 如何设计重试机制？
+  - 重试机制的核心是**重试策略**，一般来说，包含以下几个考虑点:
+    1. 什么时候、什么条件下重试?
+    2. 重试时间(确定下一次的重试时间)
+    3. 什么时候、什么条件下停止重试?
+    4. 重试后要做什么?
+
+#### 1. 重试条件
+
+- 首先是什么时候、什么条件下重试?
+  - 我们希望提高系统的可用性，当由于**网络等异常**情况发生时，触发重试
+
+#### 2. 重试时间
+
+- 重试时间(也叫**重试等待**)的策略就比较丰富了，可能会用到一些算法，主流的重试时间算法有
+  1. **固定重试间隔** (Fixed Retry Interval): 在每次重试之间使用固定的时间间隔
+  2. **指数退避重试** (Exponential Backof Retny): 在每次失败后，重试的时间间隔会以指数级增加，以避免请求过于密集
+  3. **随机延迟重试 **(Random Delay Retry): 在每次重试之间使用随机的时间间隔，以避免请求的同时发生
+  4. **可变延迟重试** (Variable Delay Retry): 这种策略更"高级"了，根据先前重试的成功或失败情况，动态调整下一次重试的延迟时间。比如，根据前一次的响应时间调整下一次重试的等待时间
+- 以上的策略是可以**组合使用**的，一定要根据具体情况和需求灵活调整。比如可以先使用指数退避重试策略，如果连续多次重试失败，则切换到固定重试间隔策略
+
+#### 3. 停止重试
+
+- 一般来说，**重试次数是有上限的**，否则随着报错的增多，系统同时发生的重试也会越来越多，造成雪崩。
+- 主流的停止重试策略有:
+  1. **最大尝试次数**: 一般重试当达到最大次数时不再重试
+  2. **超时停止**: 重试达到最大时间的时候，停止重试
+
+#### 4. 重试工作
+
+- 最后一点是重试后要做什么事情?
+  - 一般来说就是重复执行原本要做的操作，比如发送请求失败了，那就再发一次请求。需要注意的是，当重试次数超过上限时，往往还要进行其他的操作，比如:
+    1. **通知告警**: 让开发者人工介入
+    2. **降级容错**: 改为调用其他接口、或者执行其他操作
+
+### 重试方案设计
+
+- 将 `vertxTcpclient.doRequest()` 封装为一个可重试的任务，如果请求失败(重试条件)，系统就会自动按照重试策略再次发起请求，不用开发者关心
+- 对于重试算法，我们就选择主流的重试算法好了，Java 中可以使用 `Guava-Retrying` 库轻松实现多种不同的重试算法
+  - 和序列化器、注册中心、负载均衡器一样，重试策略本身也可以使用 **SPI+ 工厂**的方式，允许开发者动态配置和扩展自
+    己的重试策略
+- 最后，如果重试超过一定次数，停止重试，并且抛出异常
+
+## 开发实现
+
+### 一、多种重试策略的实现
+
+- 在 RPC 项目中新建 `fault.retry` 包，将所有重试相关的代码放到该包下
+
+#### 1. 编写通用接口
+
+- 先编写重试策略通用接口。提供一个重试方法，接受一个具体的任务参数，可以使用 `Callable `类代表一个任务
+
+  ```java
+  package com.lhk.kkrpc.fault.retry;
+  
+  import com.lhk.kkrpc.model.RpcResponse;
+  import java.util.concurrent.Callable;
+  
+  /**
+   * 重试策略
+   */
+  public interface RetryStrategy {
+  
+      /**
+       * 重试
+       *
+       * @param callable
+       * @return
+       * @throws Exception
+       */
+      RpcResponse doRetry(Callable<RpcResponse> callable) throws Exception;
+  }
+  
+  ```
+
+#### 2. 引入 Guava-Retrying 重试库
+
+```xml
+<!-- https://github.com/rholder/guava-retrying -->
+<dependency>
+    <groupId>com.github.rholder</groupId>
+    <artifactId>guava-retrying</artifactId>
+    <version>2.0.0</version>
+</dependency>
+```
+
+
+
+#### 3. 不重试策略
+
+- 直接返回异常，不进行重试
+
+  ```java
+  package com.lhk.kkrpc.fault.retry;
+  
+  import com.lhk.kkrpc.model.RpcResponse;
+  import lombok.extern.slf4j.Slf4j;
+  
+  import java.util.concurrent.Callable;
+  
+  /**
+   * 不重试 - 重试策略
+   */
+  @Slf4j
+  public class NoRetryStrategy implements RetryStrategy {
+  
+      /**
+       * 重试
+       *
+       * @param callable
+       * @return
+       * @throws Exception
+       */
+      public RpcResponse doRetry(Callable<RpcResponse> callable) throws Exception {
+          return callable.call();
+      }
+  }
+  ```
+
+
+
+#### 4. 固定重试间隔策略实现
+
+- 使用 `Guava-Retnying` 提供的 `RetryerBuilder` 能够很方便地指定重试条件、重试等待策略、重试停止策略、重试工作
+
+  ```java
+  package com.lhk.kkrpc.fault.retry;
+  
+  import com.github.rholder.retry.*;
+  import com.lhk.kkrpc.model.RpcResponse;
+  import lombok.extern.slf4j.Slf4j;
+  import java.util.concurrent.Callable;
+  import java.util.concurrent.ExecutionException;
+  import java.util.concurrent.TimeUnit;
+  
+  /**
+   * 固定时间间隔 - 重试策略
+   */
+  @Slf4j
+  public class FixedIntervalRetryStrategy implements RetryStrategy {
+  
+      /**
+       * 重试
+       *
+       * @param callable
+       * @return
+       * @throws ExecutionException
+       * @throws RetryException
+       */
+      public RpcResponse doRetry(Callable<RpcResponse> callable) throws ExecutionException, RetryException {
+          Retryer<RpcResponse> retryer = RetryerBuilder.<RpcResponse>newBuilder()
+                  .retryIfExceptionOfType(Exception.class)
+                  .withWaitStrategy(WaitStrategies.fixedWait(3L, TimeUnit.SECONDS))  //固定时间间隔重試策略
+                  .withStopStrategy(StopStrategies.stopAfterAttempt(3)) //重试次数
+                  .withRetryListener(new RetryListener() {
+                      @Override
+                      public <V> void onRetry(Attempt<V> attempt) {
+                          log.info("重试次数 {}", attempt.getAttemptNumber());
+                      }
+                  })
+                  .build();
+          return retryer.call(callable);
+      }
+  }
+  ```
+
+- 重试条件: 使用 `retrylfExceptionOfType()` 方法指定当出现 `Exception` 异常时重试。
+
+- 重试等待策略: 使用 `withWaitStrategy()` 方法指定策略，选择 `fixedWait()` 固定时间间隔策略。
+
+- 重试停止策略: 使用 `withStopStrategy()` 方法指定策略，选择 `stopAfterAttempt()` 超过最大重试次数停止。
+
+- 重试工作: 使用 `withRetryListener()` 监听重试，每次重试时，除了再次执行任务外，还能够打印当前的重试次数
+
+#### 5. 单元测试
+
+```java
+package com.yupi.yurpc.fault.retry;
+
+import com.yupi.yurpc.model.RpcResponse;
+import org.junit.Test;
+
+/**
+ * 重试策略测试
+ */
+public class RetryStrategyTest {
+
+    RetryStrategy retryStrategy = new NoRetryStrategy();
+
+    @Test
+    public void doRetry() {
+        try {
+            RpcResponse rpcResponse = retryStrategy.doRetry(() -> {
+                System.out.println("测试重试");
+                throw new RuntimeException("模拟重试失败");
+            });
+            System.out.println(rpcResponse);
+        } catch (Exception e) {
+            System.out.println("重试多次失败");
+            e.printStackTrace();
+        }
+    }
+}
+```
+
+
 
 
 
