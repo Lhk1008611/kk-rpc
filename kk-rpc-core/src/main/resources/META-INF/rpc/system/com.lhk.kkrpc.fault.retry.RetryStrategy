@@ -1,0 +1,2 @@
+no=com.lhk.kkrpc.fault.retry.NoRetryStrategy
+fixedInterval=com.lhk.kkrpc.fault.retry.FixedIntervalRetryStrategy

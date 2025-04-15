@@ -2309,6 +2309,154 @@ public class RetryStrategyTest {
 }
 ```
 
+### 二、 实现支持配置和扩展重试策略（工厂模式 + SPI）
+
+- 一个成熟的 RPC 框架可能会支持多种不同的重试策略，像序列化器、注册中心、负载均衡器一样，让开发者能够填写配置来指定使用的重试策略，并且支持自定义重试策略，让框架更易用、更利于扩展
+- 要实现这点，开发方式和序列化器、注册中心、负载均衡器都是一样的，都可以使用**工厂**创建对象、使用 **SPI 动态加载**自定义的注册中心
+
+#### 1. 重试策略常量
+
+- 新建 `RetrystrategyKeys` 类，列举所有支持的重试策略键名
+
+  ```java
+  package com.lhk.kkrpc.fault.retry;
+  
+  /**
+   * 重试策略键名常量
+   */
+  public interface RetryStrategyKeys {
+  
+      /**
+       * 不重试
+       */
+      String NO = "no";
+  
+      /**
+       * 固定时间间隔
+       */
+      String FIXED_INTERVAL = "fixedInterval";
+  
+  }
+  ```
+
+#### 2. 使用工厂模式，实现根据 key 从 SPI 获取重试策略对象实例
+
+- 新建 `RetryStrategyFactory` 类 
+
+  ```java
+  package com.lhk.kkrpc.fault.retry;
+  
+  
+  import com.lhk.kkrpc.spi.SpiLoader;
+  
+  /**
+   * 重试策略工厂（用于获取重试器对象）
+   */
+  public class RetryStrategyFactory {
+  
+      static {
+          SpiLoader.load(RetryStrategy.class);
+      }
+  
+      /**
+       * 默认重试器
+       */
+      private static final RetryStrategy DEFAULT_RETRY_STRATEGY = new NoRetryStrategy();
+  
+      /**
+       * 获取实例
+       *
+       * @param key
+       * @return
+       */
+      public static RetryStrategy getInstance(String key) {
+          return SpiLoader.getInstance(RetryStrategy.class, key);
+      }
+  
+  }
+  ```
+
+
+
+#### 3. 编写重试策略的 SPI 配置文件
+
+- 在 `META-INF` 的 `rpc/system` 目录下编写重试策略接口的 SPI 配置文件，文件名称为 `com.lhk.kkrpc.fault.retry.RetryStrategy`
+
+  ```java
+  no=com.lhk.kkrpc.fault.retry.NoRetryStrategy
+  fixedInterval=com.lhk.kkrpc.fault.retry.FixedIntervalRetryStrategy
+  ```
+
+  
+
+#### 4. 新增重试策略的全局配置
+
+- 为 `RpcConfig` 全局配置新增重试策略的配置
+
+  ```java
+  package com.lhk.kkrpc.config;
+  
+  import com.lhk.kkrpc.fault.retry.RetryStrategyKeys;
+  import com.lhk.kkrpc.loadbalancer.LoadBalancerKeys;
+  import com.lhk.kkrpc.serializer.SerializerKeys;
+  import lombok.Data;
+  
+  /**
+   * RPC 框架配置
+   */
+  @Data
+  public class RpcConfig {
+  
+      /**
+       * 名称
+       */
+      private String name = "kk-rpc";
+  
+      /**
+       * 版本号
+       */
+      private String version = "1.0";
+  
+      /**
+       * 服务器主机名
+       */
+      private String serverHost = "localhost";
+      
+      /**
+       * 服务器端口号
+       */
+      private Integer serverPort = 8888;
+  
+      /**
+       * 模拟调用
+       */
+      private boolean mock = false;
+  
+      /**
+       * 注册中心配置
+       */
+      private RegistryConfig registryConfig = new RegistryConfig();
+  
+      /**
+       * 序列化器
+       */
+      private String serializer = SerializerKeys.JDK;
+  
+      /**
+       * 负载均衡器
+       */
+      private String loadBalancer = LoadBalancerKeys.ROUND_ROBIN;
+  
+      /**
+       * 重试策略
+       */
+      private String retryStrategy = RetryStrategyKeys.NO;
+  }
+  ```
+
+
+
+
 
 
 
