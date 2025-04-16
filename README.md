@@ -2753,6 +2753,169 @@ public class FailOverTolerantStrategy implements TolerantStrategy {
 
 
 
+### 二、 实现支持配置和扩展容错策略（工厂模式 + SPI）
+
+#### 1. 容错策略常量
+
+- 新建 `TolerantStrategyKeys` 类，列举所有支持的容错策略键名
+
+  ```java
+  package com.lhk.kkrpc.fault.tolerant;
+  
+  /**
+   * 容错策略键名常量
+   */
+  public interface TolerantStrategyKeys {
+  
+      /**
+       * 故障恢复
+       */
+      String FAIL_BACK = "failBack";
+  
+      /**
+       * 快速失败
+       */
+      String FAIL_FAST = "failFast";
+  
+      /**
+       * 故障转移
+       */
+      String FAIL_OVER = "failOver";
+  
+      /**
+       * 静默处理
+       */
+      String FAIL_SAFE = "failSafe";
+  
+  }
+  ```
+
+  
+
+#### 2. 使用工厂模式，实现根据 key 从 SPI 获取容错策略对象实例
+
+- 新建 `TolerantStrategyFactory` 工厂类
+
+  ```java
+  package com.lhk.kkrpc.fault.tolerant;
+  
+  
+  import com.lhk.kkrpc.spi.SpiLoader;
+  
+  /**
+   * 容错策略工厂（工厂模式，用于获取容错策略对象）
+   */
+  public class TolerantStrategyFactory {
+  
+      static {
+          SpiLoader.load(TolerantStrategy.class);
+      }
+  
+      /**
+       * 默认容错策略
+       */
+      private static final TolerantStrategy DEFAULT_RETRY_STRATEGY = new FailFastTolerantStrategy();
+  
+      /**
+       * 获取实例
+       *
+       * @param key
+       * @return
+       */
+      public static TolerantStrategy getInstance(String key) {
+          return SpiLoader.getInstance(TolerantStrategy.class, key);
+      }
+  
+  }
+  
+  ```
+
+
+
+#### 3. 编写容错策略的 SPI 配置文件
+
+- 在 `META-INF` 的 `rpc/system` 目录下编写容错策略接口的 SPI 配置文件，文件名称为 `com.lhk.kkrpc.fault.tolerant.TolerantStrategy`
+
+  ```java
+  failBack=com.lhk.kkrpc.fault.tolerant.FailBackTolerantStrategy
+  failFast=com.lhk.kkrpc.fault.tolerant.FailFastTolerantStrategy
+  failOver=com.lhk.kkrpc.fault.tolerant.FailOverTolerantStrategy
+  failSafe=com.lhk.kkrpc.fault.tolerant.FailSafeTolerantStrategy
+  ```
+
+  
+
+#### 4. 新增容错策略的全局配置
+
+- 为 `RpcConfig` 全局配置新增容错策略的配置
+
+  ```java
+  package com.lhk.kkrpc.config;
+  
+  import com.lhk.kkrpc.fault.retry.RetryStrategyKeys;
+  import com.lhk.kkrpc.fault.tolerant.TolerantStrategyKeys;
+  import com.lhk.kkrpc.loadbalancer.LoadBalancerKeys;
+  import com.lhk.kkrpc.serializer.SerializerKeys;
+  import lombok.Data;
+  
+  /**
+   * RPC 框架配置
+   */
+  @Data
+  public class RpcConfig {
+  
+      /**
+       * 名称
+       */
+      private String name = "kk-rpc";
+  
+      /**
+       * 版本号
+       */
+      private String version = "1.0";
+  
+      /**
+       * 服务器主机名
+       */
+      private String serverHost = "localhost";
+      
+      /**
+       * 服务器端口号
+       */
+      private Integer serverPort = 8888;
+  
+      /**
+       * 模拟调用
+       */
+      private boolean mock = false;
+  
+      /**
+       * 注册中心配置
+       */
+      private RegistryConfig registryConfig = new RegistryConfig();
+  
+      /**
+       * 序列化器
+       */
+      private String serializer = SerializerKeys.JDK;
+  
+      /**
+       * 负载均衡器
+       */
+      private String loadBalancer = LoadBalancerKeys.ROUND_ROBIN;
+  
+      /**
+       * 重试策略
+       */
+      private String retryStrategy = RetryStrategyKeys.NO;
+  
+      /**
+       * 容错策略
+       */
+      private String tolerantStrategy = TolerantStrategyKeys.FAIL_FAST;
+  }
+  ```
+
 
 
 

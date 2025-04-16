@@ -1,6 +1,7 @@
 package com.lhk.kkrpc.config;
 
 import com.lhk.kkrpc.fault.retry.RetryStrategyKeys;
+import com.lhk.kkrpc.fault.tolerant.TolerantStrategyKeys;
 import com.lhk.kkrpc.loadbalancer.LoadBalancerKeys;
 import com.lhk.kkrpc.serializer.SerializerKeys;
 import lombok.Data;
@@ -55,5 +56,10 @@ public class RpcConfig {
      * 重试策略
      */
     private String retryStrategy = RetryStrategyKeys.NO;
+
+    /**
+     * 容错策略
+     */
+    private String tolerantStrategy = TolerantStrategyKeys.FAIL_FAST;
 }
 

@@ -1,0 +1,4 @@
+failBack=com.lhk.kkrpc.fault.tolerant.FailBackTolerantStrategy
+failFast=com.lhk.kkrpc.fault.tolerant.FailFastTolerantStrategy
+failOver=com.lhk.kkrpc.fault.tolerant.FailOverTolerantStrategy
+failSafe=com.lhk.kkrpc.fault.tolerant.FailSafeTolerantStrategy
