@@ -1,4 +1,7 @@
+
+
 # - kk-rpc
+
 kk-rpc 框架
 
 # etcd
@@ -2917,6 +2920,105 @@ public class FailOverTolerantStrategy implements TolerantStrategy {
   ```
 
 
+
+### 三、应用容错策略
+
+- 修改 `ServiceProxy` 的代码，在重试多次抛出异常时，从工厂中获取容错策略并执行即可
+
+  ```java
+  package com.lhk.kkrpc.proxy;
+  
+  import cn.hutool.core.collection.CollUtil;
+  import com.lhk.kkrpc.RpcApplication;
+  import com.lhk.kkrpc.config.RpcConfig;
+  import com.lhk.kkrpc.constant.RpcConstant;
+  import com.lhk.kkrpc.fault.retry.RetryStrategy;
+  import com.lhk.kkrpc.fault.retry.RetryStrategyFactory;
+  import com.lhk.kkrpc.fault.tolerant.TolerantStrategy;
+  import com.lhk.kkrpc.fault.tolerant.TolerantStrategyFactory;
+  import com.lhk.kkrpc.loadbalancer.LoadBalancer;
+  import com.lhk.kkrpc.loadbalancer.LoadBalancerFactory;
+  import com.lhk.kkrpc.model.RpcRequest;
+  import com.lhk.kkrpc.model.RpcResponse;
+  import com.lhk.kkrpc.model.ServiceMetaInfo;
+  import com.lhk.kkrpc.registry.Registry;
+  import com.lhk.kkrpc.registry.RegistryFactory;
+  import com.lhk.kkrpc.server.tcp.VertxTcpClient;
+  
+  import java.lang.reflect.InvocationHandler;
+  import java.lang.reflect.Method;
+  import java.util.HashMap;
+  import java.util.List;
+  
+  /**
+   * 服务代理（JDK 动态代理）（客户端发送请求时对请求进行处理后再发送）
+   */
+  public class ServiceProxy implements InvocationHandler {
+  
+      /**
+       * 调用代理发送请求
+       *
+       * @return
+       * @throws Throwable
+       */
+      @Override
+      public Object invoke(Object proxy, Method method, Object[] args) {
+          // 构造请求
+          String serviceName = method.getDeclaringClass().getName();
+          RpcRequest rpcRequest = RpcRequest.builder()
+                  .serviceName(serviceName)
+                  .methodName(method.getName())
+                  .parameterTypes(method.getParameterTypes())
+                  .args(args)
+                  .build();
+  
+          // 从注册中心获取服务提供者请求地址
+          RpcConfig rpcConfig = RpcApplication.getRpcConfig();
+          Registry registry = RegistryFactory.getInstance(rpcConfig.getRegistryConfig().getRegistry());
+          ServiceMetaInfo serviceMetaInfo = new ServiceMetaInfo();
+          serviceMetaInfo.setServiceName(serviceName);
+          serviceMetaInfo.setServiceVersion(RpcConstant.DEFAULT_SERVICE_VERSION);
+          List<ServiceMetaInfo> serviceMetaInfoList = registry.serviceDiscovery(serviceMetaInfo.getServiceKey());
+          if (CollUtil.isEmpty(serviceMetaInfoList)) {
+              throw new RuntimeException("暂无服务地址");
+          }
+          // 负载均衡
+          LoadBalancer loadBalancer = LoadBalancerFactory.getInstance(rpcConfig.getLoadBalancer());
+          HashMap<String, Object> requestParams = new HashMap<>();
+          requestParams.put("methodName", rpcRequest.getMethodName());
+          ServiceMetaInfo selectedServiceMetaInfo = loadBalancer.select(requestParams, serviceMetaInfoList);
+  
+          // 发送 tcp 请求
+          // 使用重试机制
+          RpcResponse rpcResponse;
+          try {
+              RetryStrategy retryStrategy = RetryStrategyFactory.getInstance(rpcConfig.getRetryStrategy());
+              rpcResponse = retryStrategy.doRetry(() ->
+                      VertxTcpClient.doRequest(rpcRequest, selectedServiceMetaInfo)
+              );
+          } catch (Exception e) {
+              // 调用容错机制
+              TolerantStrategy tolerantStrategy = TolerantStrategyFactory.getInstance(rpcConfig.getTolerantStrategy());
+              rpcResponse = tolerantStrategy.doTolerant(null, e);
+          }
+          return rpcResponse.getData();
+      }
+  }
+  
+  ```
+
+### 四、测试
+
+- 首先启动服务提供者，然后使用 Debug 模式启动服务消费者，当服务消费者发起调用时，立刻停止服务提供者，就会看到调用失败后重试的情况。等待多次重试后，就可以看到容错策略的执行。
+
+### 五、扩展
+
+1. 实现 Fail-Back 容错机制。
+   - 参考思路: 可以参考 Dubbo 的 Mock 能力，让消费端指定调用失败后要执行的本地服务和方法
+2. 实现 Fail-Over 容错机制
+   - 参考思路: 可以利用容错方法的上下文参数传递所有的服务节点和本次调用的服务节点，选择一个其他节点再次发起调用
+3. 实现更多容错方案。(较难)
+   - 参考思路: 比如限流、熔断、超时控制等。或者将重试机制作为容错机制的一种策略来实现
 
 
 
