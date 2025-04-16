@@ -1,4 +1,4 @@
-# kk-rpc
+# - kk-rpc
 kk-rpc 框架
 
 # etcd
@@ -2552,9 +2552,204 @@ public class RetryStrategyTest {
 
 
 
+# 容错机制
+
+## 需求分析
+
+- 尽管给 RPC 框架增加了重试机制，提升了服务消费端的可靠性和健壮性。但如果重试超过了一定次数仍然失败，又该怎么处理呢?
+  或者说当调用出现失败时，我们一定要重试么?有没有其他的策略呢?
+- 这时候可以通过增加**容错机制**来提高服务消费端可靠性和健壮性
 
 
 
+## 设计方案
+
+### 容错机制
+
+- 容错是指系统在**出现异常情况**时，可以通过一定的策略**保证系统仍然稳定运行**，从而提高系统的可靠性和健壮性
+- 在分布式系统中，容错机制尤为重要，因为分布式系统中的各个组件都可能存在网络故障、节点故障等各种异常情况。要顾全大局，尽可能消除偶发/单点故障对系统带来的整体影响
+- 打个比方，将分布式系统类比为一家公司，如果公司某个优秀员工请假了，需要“触发容错”，让另一个普通员工顶上这本质上是容错机制的一种 **降级** 策略
+- 容错机制一般都是在**系统出现错误时才触发**的，重点是**容错策略**和**容错实现方式**
+
+
+
+### 容错策略
+
+- 容错策略有很多种，常用的容错策略主要是以下几个:
+  1. **Fail-Over 故障转移**: 一次调用失败后，切换一个其他节点再次进行调用，也算是一种重试
+  2. **Fail-Back 失败自动恢复**: 系统的某个功能出现调用失败或错误时，通过其他的方法，恢复该功能的正常。可以理解为降级，比如重试、调用其他服务等
+  3. **Fail-Safe 静默处理**: 系统出现部分非重要功能的异常时，直接忽略掉，不做任何处理，就像错误没有发生过一样
+  4. **Fail-Fast 快速失败**: 系统出现调用错误时，立刻报错，交给外层调用方处理
+
+### 容错的实现方式
+
+- 容错其实是个比较广泛的概念，除了上面几种策略外，很多技术都可以起到容错的作用。比如:
+  1. **重试**: 重试本质上也是一种容错的降级策略，系统错误后再试一次。
+  2. **限流**: 当系统压力过大、已经出现部分错误时，通过限制执行操作(接受请求)的频率或数量，对系统进行保护。
+  3. **降级**: 系统出现错误后，改为执行其他更稳定可用的操作。也可以叫做“兜底”或“有损服务"，这种方式的本质是:即使牺牲一定的服务质量，也要保证系统的部分功能可用，保证基本的功能需求得到满足。
+  4. **熔断**: 系统出现故障或异常时，暂时中断对该服务的请求，而是执行其他操作，以避免连锁故障。
+  5. **超时控制**: 如果请求或操作长时间没处理完成，就进行中断，防止阻塞和资源占用。
+- 注意，在实际项目中，根据对系统可靠性的需求，我们通常会结合多种策略或方法实现容错机制
+
+### 容错方案设计
+
+- 之前已经给系统增加重试机制了，算是实现了一部分的容错能力。现在，可以正式引入容错机制，通过更多策略来进一步增加系统可靠性
+- 容错方案的设计可以是很灵活的，以下是两种方案
+  1. **先容错再重试**
+     - 当系统发生异常时，首先会触发容错机制，比如记录日志、进行告警等，然后可以选择是否进行重试
+     - 这种方案其实是把重试当做容错机制的一种可选方案
+  2. **先重试再容错**
+     - 在发生错误后，首先尝试重试操作，如果重试多次仍然失败，则触发容错机制，比如记录日志、进行告警等
+- 这 2种方案其实完全可以结合使用!
+  - 系统错误时，先通过重试操作解决一些临时性的异常，比如网络波动、服务端临时不可用等;如果重试多次后仍然失败，说明可能存在更严重的问题，这时可以触发其他的容错策略，比如调用降级服务、熔断、限流、快速失败等，来减少异常的影响，保障系统的稳定性和可靠性
+  - 举个具体的例子:
+    1. 系统调用服务 A 出现网络错误，使用**容错策略 - 重试**
+    2. 重试 3次失败后，使用其他**容错策略 - 降级**
+    3. 系统改为调用不依赖网络的服务 B，完成操作
+
+## 开发实现
+
+### 一、多种容错策略的实现
+
+- 实现 2 种最基本的容错策略: **Fail-Fast 快速失败**、**Fail-Safe 静默处理**
+
+
+
+#### 1. 编写容错策略通用接口
+
+- 先编写容错策略通用接口。
+
+  - 提供一个容错方法，使用 `Map` 类型的参数接受上下文信息(可用于灵活地传递容错处理需要用到的数据)，并且接受一个具体的异常类参数
+  - 由于容错是应用到发送请求操作的，所以容错方法的返回值是 `RpcResponse`(响应)
+
+  ```java
+  package com.lhk.kkrpc.fault.tolerant;
+  
+  import com.lhk.kkrpc.model.RpcResponse;
+  
+  import java.util.Map;
+  
+  /**
+   * 容错策略
+   */
+  public interface TolerantStrategy {
+  
+      /**
+       * 容错
+       *
+       * @param context 上下文，用于传递数据
+       * @param e       异常
+       * @return
+       */
+      RpcResponse doTolerant(Map<String, Object> context, Exception e);
+  }
+  
+  ```
+
+#### 2.  Fail-Fast 快速失败容错策略的实现
+
+- 就是遇到异常后，将异常再次抛出，交给外层处理
+
+  ```java
+  package com.lhk.kkrpc.fault.tolerant;
+  
+  import com.lhk.kkrpc.model.RpcResponse;
+  
+  import java.util.Map;
+  
+  /**
+   * 快速失败 - 容错策略（立刻通知外层调用方）
+   */
+  public class FailFastTolerantStrategy implements TolerantStrategy {
+  
+      @Override
+      public RpcResponse doTolerant(Map<String, Object> context, Exception e) {
+          throw new RuntimeException("服务报错", e);
+      }
+  }
+  
+  ```
+
+
+
+#### 3. Fail-Safe 静默处理容错策略的实现
+
+- 就是遇到异常后，记录一条日志，然后正常返回一个响应对象，就好像没有出现过报错
+
+  ```java
+  package com.lhk.kkrpc.fault.tolerant;
+  
+  import com.lhk.kkrpc.model.RpcResponse;
+  import lombok.extern.slf4j.Slf4j;
+  
+  import java.util.Map;
+  
+  /**
+   * 静默处理异常 - 容错策略
+   */
+  @Slf4j
+  public class FailSafeTolerantStrategy implements TolerantStrategy {
+  
+      @Override
+      public RpcResponse doTolerant(Map<String, Object> context, Exception e) {
+          log.info("静默处理异常", e);
+          return new RpcResponse();
+      }
+  }
+  ```
+
+  
+
+#### 4. 其他容错策略
+
+##### （1）**Fail-Back 失败自动恢复**
+
+```java
+package com.lhk.kkrpc.fault.tolerant;
+
+import com.lhk.kkrpc.model.RpcResponse;
+import lombok.extern.slf4j.Slf4j;
+
+import java.util.Map;
+
+/**
+ * 降级到其他服务 - 容错策略
+ */
+@Slf4j
+public class FailBackTolerantStrategy implements TolerantStrategy {
+
+    @Override
+    public RpcResponse doTolerant(Map<String, Object> context, Exception e) {
+        // todo 可自行扩展，获取降级的服务并调用
+        return null;
+    }
+}
+```
+
+##### （2）Fail-Over 故障转移
+
+```java
+package com.lhk.kkrpc.fault.tolerant;
+
+
+import com.lhk.kkrpc.model.RpcResponse;
+import lombok.extern.slf4j.Slf4j;
+
+import java.util.Map;
+
+/**
+ * 转移到其他服务节点 - 容错策略
+ */
+@Slf4j
+public class FailOverTolerantStrategy implements TolerantStrategy {
+
+    @Override
+    public RpcResponse doTolerant(Map<String, Object> context, Exception e) {
+        // todo 可自行扩展，获取其他服务节点并调用
+        return null;
+    }
+}
+```
 
 
 
