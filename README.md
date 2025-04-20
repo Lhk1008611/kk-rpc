@@ -3188,7 +3188,7 @@ public class FailOverTolerantStrategy implements TolerantStrategy {
 
 
 
-#### 二、服务消费者启动类
+#### 2. 服务消费者启动类
 
 - 服务消费者启动类的实现较为容易，因为它不需要注册服务、也不需要启动 Web 服务器，因此只需要执行 `RpcApplicatio
   n.init()` 完成框架的通用初始化即可
@@ -3252,7 +3252,428 @@ public class FailOverTolerantStrategy implements TolerantStrategy {
   
   ```
 
+
+
+### 二、Spring Boot Starter 注解驱动
+
+- 为了不和已有项目的代码混淆，创建一个新的项目模块，专门用于实现 Spring Boot starter 注解驱动的 RPC 框架
+
+
+
+#### 1. Spring Boot Starter 项目初始化
+
+- 新建一个 Spring Boot 项目 `kk-rpc-spring-boot-starter`
+
+  - JDK 和 java 版本选择 >= 8 即可
+  - Spring Boot 版本选择 2.6.13
+  - 选择依赖 Spring Configuration Processor
+
+- 创建好后，移除pom.xml 中无用的插件代码
+
+  ```xml
+  <plugin>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-maven-plugin</artifactId>
+      <version>${spring-boot.version}</version>
+      <configuration>
+          <mainClass>com.yupi.yurpc.springboot.starter.YuRpcSpringBootStarterApplication</mainClass>
+          <skip>true</skip>
+      </configuration>
+      <executions>
+          <execution>
+              <id>repackage</id>
+              <goals>
+                  <goal>repackage</goal>
+              </goals>
+          </execution>
+      </executions>
+  </plugin>
   
+  ```
+
+- 引入自定义 rpc 框架依赖
+
+  ```java
+          <dependency>
+              <groupId>com.lhk</groupId>
+              <artifactId>kk-rpc-core</artifactId>
+              <version>1.0-SNAPSHOT</version>
+          </dependency>
+  ```
+
+
+
+#### 2. 定义注解
+
+- 实现注解驱动的第一步是定义注解，要定义哪些注解呢?怎么知道应该定义哪些注解呢?
+  - 可以参考知名框架 Dubbo 的注解。
+  - 比如:
+    1. `@EnableDubbo`: 在 Spring Boot 主应用类上使用，用于启用 Dubbo 功能
+    2. `@DubboComponentScan`: 在 Spring Boot 主应用类上使用，用于指定 Dubbo 组件扫描的包路径
+    3. `@DubboReference`: 在消费者中使用，用于声明 Dubbo 服务引用
+    4. `@DubboService`: 在提供者中使用，用于声明 Dubbo 服务
+    5. `@DubboMethod`: 在提供者和消费者中使用，用于配置 Dubbo 方法的参数、超时时间等
+    6. `@DubboTransported`: 在 Dubbo 提供者和消费者中使用，用于指定传输协议和参数，例如传输协议的类型、端口等
+
+- 遵循最小可用化原则，这里只需要定义3个注解
+  - `@EnableRpc`
+  - `@RpcReference`
+  - `@RpcService`
+- 新建 `annotation` 包，将所有注解代码放到该包下
+
+##### 1. @EnableRpc
+
+- `@EnableRpc`: 用于全局标识项目需要引入 RPC 框架、执行初始化方法
+
+- 由于服务消费者和服务提供者初始化的模块不同，我们需要在 `@EnableRpc` 注解中，指定是否需要启动服务器等属性
+
+  ```java
+  package com.lhk.kkrpcspringbootstarter.annotation;
+  
+  import java.lang.annotation.ElementType;
+  import java.lang.annotation.Retention;
+  import java.lang.annotation.RetentionPolicy;
+  import java.lang.annotation.Target;
+  
+  /**
+   * 启用 rpc 注解
+   */
+  @Target({ElementType.TYPE})
+  @Retention(RetentionPolicy.RUNTIME)
+  public @interface EnableRpc {
+  
+      /**
+       * 默认需要启动服务端
+       * @return
+       */
+      boolean needServer() default true;
+  }
+  
+  ```
+
+- 当然，也可以将 `@EnableRpc` 注解拆分为两个注解(比如 `@EnableRpcProvider`、`@EnableRpcConsumer`)，分别用于标识服
+  务提供者和消费者，但可能存在模块重复初始化的可能性
+
+##### 2. @RpcService
+
+- `@RpcService`: 服务提供者注解，在需要注册和提供的服务类上使用
+
+- `@RpcService` 注解中，需要指定服务注册信息属性，比如服务接口实现类、版本号等(也可以包括服务名称)
+
+  ```java
+  package com.lhk.kkrpcspringbootstarter.annotation;
+  
+  import com.lhk.kkrpc.constant.RpcConstant;
+  import org.springframework.stereotype.Component;
+  
+  import java.lang.annotation.ElementType;
+  import java.lang.annotation.Retention;
+  import java.lang.annotation.RetentionPolicy;
+  import java.lang.annotation.Target;
+  
+  /**
+   * 服务提供者注解（用于注册服务）
+   */
+  @Target({ElementType.TYPE})
+  @Retention(RetentionPolicy.RUNTIME)
+  @Component
+  public @interface RpcService {
+  
+      /**
+       * 服务接口类
+       */
+      Class<?> interfaceClass() default void.class;
+  
+      /**
+       * 服务版本号
+       */
+      String serviceVersion() default RpcConstant.DEFAULT_SERVICE_VERSION;
+  }
+  
+  ```
+
+##### 3. @RpcReference
+
+- `@RpcReference`: 服务消费者注解，在需要注入服务代理对象的属性上使用，类似 Spring 中的 `@Resource` 注解
+
+- `@RpcReference` 注解中，需要指定调用服务相关的属性，比如**服务接口类**(可能存在多个接口)、**版本号**、**负载均衡器**、**重**
+  **试策略**、**是否 Mock 模拟调用**等
+
+  ```java
+  package com.lhk.kkrpcspringbootstarter.annotation;
+  
+  import com.lhk.kkrpc.constant.RpcConstant;
+  import org.springframework.stereotype.Component;
+  
+  import java.lang.annotation.ElementType;
+  import java.lang.annotation.Retention;
+  import java.lang.annotation.RetentionPolicy;
+  import java.lang.annotation.Target;
+  
+  /**
+   * 服务提供者注解（用于注册服务）
+   */
+  @Target({ElementType.TYPE})
+  @Retention(RetentionPolicy.RUNTIME)
+  @Component
+  public @interface RpcService {
+  
+      /**
+       * 服务接口类
+       */
+      Class<?> interfaceClass() default void.class;
+  
+      /**
+       * 服务版本号
+       */
+      String serviceVersion() default RpcConstant.DEFAULT_SERVICE_VERSION;
+  }
+  
+  ```
+
+#### 3. 注解驱动
+
+- 在 starter 项目中新建 `bootstrap` 包，并且分别针对上面定义的3个注解新建启动类
+
+##### 1. Rpc 框架全局启动类 RpcInitBootstrap
+
+- 这个类的需求是，在 Spring 框架初始化时，获取`@EnableRpc` 注解的属性，并初始化 RPC 框架
+
+- 怎么获取到注解的属性呢?
+
+  - 可以实现 Spring 的 `ImportBeanDefinitionRegistrar` 接口，并且在 `registerBeanDefinitions` 方法中，获取到项目的注
+    解和注解属性
+
+  ```java
+  package com.lhk.kkrpcspringbootstarter.bootstrap;
+  
+  import com.lhk.kkrpc.RpcApplication;
+  import com.lhk.kkrpc.config.RpcConfig;
+  import com.lhk.kkrpc.server.tcp.VertxTcpServer;
+  import com.lhk.kkrpcspringbootstarter.annotation.EnableRpc;
+  import lombok.extern.slf4j.Slf4j;
+  import org.springframework.beans.factory.support.BeanDefinitionRegistry;
+  import org.springframework.context.annotation.ImportBeanDefinitionRegistrar;
+  import org.springframework.core.type.AnnotationMetadata;
+  
+  /**
+   * Rpc 框架启动
+   */
+  @Slf4j
+  public class RpcInitBootstrap implements ImportBeanDefinitionRegistrar {
+  
+      @Override
+      public void registerBeanDefinitions(AnnotationMetadata importingClassMetadata, BeanDefinitionRegistry registry) {
+          // 获取 @EnableRpc 注解的属性值
+          boolean needServer = (boolean) importingClassMetadata.getAnnotationAttributes(EnableRpc.class.getName())
+                  .get("needServer");
+  
+          // Rpc 框架初始化，初始化 RPC 配置 (从 application.properties 文件中读取配置)
+          RpcApplication.init();
+          // 获取 RPC 配置对象
+          RpcConfig rpcConfig = RpcApplication.getRpcConfig();
+  
+          // 启动服务器
+          if (needServer) {
+              // 初始化服务端
+              // 启动 tcp 服务
+              VertxTcpServer vertxTcpServer = new VertxTcpServer();
+              vertxTcpServer.doStart(rpcConfig.getServerPort());
+          }else {
+              log.info("不启动 server");
+          }
+      }
+  }
+  
+  ```
+
+  - 上述代码中，我们从 Spring 元信息中获取到了 `@EnableRpc` 注解的 `needServer` 属性，并通过它来判断是否要启动服务器
+
+
+
+##### 2. Rpc 服务提供者启动类 RpcProviderBootstrap
+
+- 服务提供者启动类的作用是，获取到所有包含 `@Rpcservice` 注解的类，并且通过注解的属性和反射机制，获取到要注册的服务信息，并且完成服务注册
+
+- 怎么获取到所有包含 `@Rpcservice` 注解的类呢?
+
+  - 可以主动扫描包，也可以利用 Spring 的特性监听 Bean 的加载。
+
+    - 此处选择后者，实现更简单，而且能直接获取到服务提供者类的 Bean 对象。
+    - 只需要让启动类实现 `BeanpostProcessor` 接口的 `postProcessAfterInitialization` 方法，就可以在某个服务提供者 Bean 初始化后，执行注册服务等操作了
+
+    ```java
+    package com.lhk.kkrpcspringbootstarter.bootstrap;
+    
+    import com.lhk.kkrpc.RpcApplication;
+    import com.lhk.kkrpc.config.RegistryConfig;
+    import com.lhk.kkrpc.config.RpcConfig;
+    import com.lhk.kkrpc.model.ServiceMetaInfo;
+    import com.lhk.kkrpc.registry.LocalRegistry;
+    import com.lhk.kkrpc.registry.Registry;
+    import com.lhk.kkrpc.registry.RegistryFactory;
+    import com.lhk.kkrpcspringbootstarter.annotation.RpcService;
+    import org.springframework.beans.BeansException;
+    import org.springframework.beans.factory.config.BeanPostProcessor;
+    
+    /**
+     * Rpc 服务提供者启动
+     */
+    public class RpcProviderBootstrap implements BeanPostProcessor {
+    
+        /**
+         * Bean 初始化后执行，注册服务
+         * @param bean
+         * @param beanName
+         * @return
+         * @throws BeansException
+         */
+        @Override
+        public Object postProcessAfterInitialization(Object bean, String beanName) throws BeansException {
+            Class<?> beanClass = bean.getClass();
+            RpcService rpcServiceAnnotation = beanClass.getAnnotation(RpcService.class);
+            if (rpcServiceAnnotation != null) {
+                // 获取服务接口
+                Class<?> interfaceClass = rpcServiceAnnotation.serviceInterface();
+                // 默认值处理如果没有指定接口，则获取第一个接口
+                if (interfaceClass == void.class) {
+                    interfaceClass = (Class<?>) beanClass.getInterfaces()[0];
+                }
+                // 获取服务名
+                String serviceName = interfaceClass.getName();
+                // 获取服务版本
+                String serviceVersion = rpcServiceAnnotation.version();
+    
+                // 注册服务
+                // 本地注册
+                LocalRegistry.register(serviceName, beanClass);
+                // 获取 RPC 配置对象
+                RpcConfig rpcConfig = RpcApplication.getRpcConfig();
+                // 注册服务到注册中心
+                RegistryConfig registryConfig = rpcConfig.getRegistryConfig();
+                Registry registry = RegistryFactory.getInstance(registryConfig.getRegistry());
+                ServiceMetaInfo serviceMetaInfo =  new ServiceMetaInfo();
+                serviceMetaInfo.setServiceName(serviceName);
+                serviceMetaInfo.setServiceVersion(serviceVersion);
+                serviceMetaInfo.setServiceHost(rpcConfig.getServerHost());
+                serviceMetaInfo.setServicePort(rpcConfig.getServerPort());
+                try {
+                    registry.register(serviceMetaInfo);
+                } catch (Exception e) {
+                    throw new RuntimeException(serviceName + " 注册失败",e);
+                }
+            }
+            return BeanPostProcessor.super.postProcessAfterInitialization(bean, beanName);
+        }
+    }
+    
+    ```
+
+    - 其实上述代码中，绝大多数服务提供者初始化的代码都只需要从之前写好的启动类中复制粘贴，只不过换了一种参数获
+      取方式罢了
+
+
+
+##### 3. Rpc 服务消费者启动类 RpcConsumerBootstrap
+
+- 和服务提供者启动类的实现方式类似，在 Bean 初始化后，通过反射获取到 Bean 的所有属性，如果属性包含 `@RpcReferenc`e 注解，那么就为该属性动态生成代理对象并赋值
+
+  ```java
+  package com.lhk.kkrpcspringbootstarter.bootstrap;
+  
+  import com.lhk.kkrpc.proxy.ServiceProxyFactory;
+  import com.lhk.kkrpcspringbootstarter.annotation.RpcReference;
+  import org.springframework.beans.BeansException;
+  import org.springframework.beans.factory.config.BeanPostProcessor;
+  
+  import java.lang.reflect.Field;
+  
+  /**
+   * Rpc 服务消费者启动
+   */
+  public class RpcConsumerBootstrap implements BeanPostProcessor {
+  
+      /**
+       * Bean 初始化后执行，注入服务
+       * @param bean
+       * @param beanName
+       * @return
+       * @throws BeansException
+       */
+      @Override
+      public Object postProcessAfterInitialization(Object bean, String beanName) throws BeansException {
+          Class<?> beanClass = bean.getClass();
+          Field[] declaredField = beanClass.getDeclaredFields();
+          // 遍历对象所有属性
+          for (Field field : declaredField) {
+              RpcReference rpcReference = field.getAnnotation(RpcReference.class);
+              if (rpcReference != null) {
+                  // 为属性生成代理对象
+                  Class<?> interfaceClass = rpcReference.interfaceClass();
+                  if (interfaceClass == void.class){
+                      interfaceClass = field.getType();
+                  }
+                  field.setAccessible(true);
+                  Object proxy = ServiceProxyFactory.getProxy(interfaceClass);
+                  try {
+                      field.set(bean, proxy);
+                      field.setAccessible(false);
+                  } catch (IllegalAccessException e) {
+                      throw new RuntimeException("为字段注入代理对象失败",e);
+                  }
+              }
+          }
+          return BeanPostProcessor.super.postProcessAfterInitialization(bean, beanName);
+      }
+  }
+  
+  ```
+
+  - 上述代码中，核心方法是 `beanclass.getDeclaredfields` ，用于获取类中的所有属性。看到这里的同学，必须要把反射的常用语法熟记于心了
+  - `field.setAccessible(true)` 的功能是设置字段的访问权限为可访问状态，即使该字段是私有的。这允许通过反射机制直接操作类的私有字段，而不会受到 Java 访问控制的限制
+  - `field.set(bean, proxy)` ：将 proxy 对象设置为 bean 中对应字段的值
+
+
+
+##### 4. 注册已编写的启动类
+
+- 最后，在 Spring 中加载已经编写好的启动类
+
+  - 如何加载呢?
+
+    - 需求是，仅在用户使用 `@EnableRpc` 注解时，才启动 RPC 框架。所以，可以通过给 `@EnableRpc` 增加 `@Import` 注解，来注册我们自定义的启动类，实现灵活的可选加载
+
+    ```JAVA
+    package com.lhk.kkrpcspringbootstarter.annotation;
+    
+    import com.lhk.kkrpcspringbootstarter.bootstrap.RpcConsumerBootstrap;
+    import com.lhk.kkrpcspringbootstarter.bootstrap.RpcInitBootstrap;
+    import com.lhk.kkrpcspringbootstarter.bootstrap.RpcProviderBootstrap;
+    import org.springframework.context.annotation.Import;
+    
+    import java.lang.annotation.ElementType;
+    import java.lang.annotation.Retention;
+    import java.lang.annotation.RetentionPolicy;
+    import java.lang.annotation.Target;
+    
+    /**
+     * 启用 rpc 注解
+     */
+    @Target({ElementType.TYPE})
+    @Retention(RetentionPolicy.RUNTIME)
+    @Import({RpcInitBootstrap.class, RpcProviderBootstrap.class, RpcConsumerBootstrap.class})
+    public @interface EnableRpc {
+    
+        /**
+         * 默认需要启动服务端
+         * @return
+         */
+        boolean needServer() default true;
+    }
+    
+    ```
+
+- 这样，一个基于注解驱动的 RPC 框架 Starter 开发完成
 
 
 
