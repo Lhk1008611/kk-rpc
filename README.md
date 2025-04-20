@@ -3022,6 +3022,240 @@ public class FailOverTolerantStrategy implements TolerantStrategy {
 
 
 
+# 启动机制和注解驱动
+
+## 需求分析
+
+- 参考服务提供者和服务消费者代码例子，发现现在使用框架的时候还是不够简便，因此需要优化框架的易用性，通过建立合适的**启动机制和注解驱动机制**，帮助开发者最少只用一行代码，就能轻松使用框架
+
+
+
+## 设计方案
+
+### 启动机制设计
+
+- 其实很简单，把所有启动代码封装成一个 专门的启动类 或方法，然后由服务提供者/服务消费者调用即可。
+- 但有一点需要注意，服务提供者和服务消费者需要初始化的模块是不同的，比如服务消费者不需要启动 Web 服务器
+  - 所以需要针对服务提供者和消费者分别编写一个启动类，如果是二者都需要初始化的模块，可以放到全局应用类 `RpcApplication` 中，复用代码的同时保证启动类的可维护、可扩展性
+
+- 参考 doubbo ：https://cn.dubbo.apache.org/zh-cn/overview/mannual/java-sdk/quick-start/api/
+
+### 注解驱动设计
+
+- 参考 doubbo 的注解驱动，开发者只需要在服务提供者实现类打上一个 `Dubboservice` 注解，就能快速注册服务;同样的,
+  只要在服务消费者字段打上一个 `DubboReference` 注解，就能快速使用服务
+- 而且由于现在的 Java 项目基本都使用 Spring Boot 框架，所以 Dubbo 还贴心地推出了 Spring Boot starter，用更少的代码在
+  Spring Boot 项目中使用框架
+  - 参考文档：https://cn.dubbo.apache.org/zh-cn/overview/mannual/java-sdk/quick-start/starter/
+- 因此可以参考 doubbo ，给本 rpc 框架创建一个 Spring Boot Starter 项目，并通过注解驱动框架的初始化，完成服务注册和获取引
+  用
+- 实现注解驱动并不复杂，有2种常用的方式:
+  1. 主动扫描: 让开发者指定要扫描的路径，然后遍历所有的类文件，针对有注解的类文件，执行自定义的操作
+  2. 监听 Bean 加载: 在 Spring 项目中，可以通过实现 `BeanPostProcessor` 接口，在 Bean 初始化后执行自定义的操作
+
+## 开发实现
+
+### 一、启动机制
+
+- 在 rpc 项目中新建包名 `bootstrap` ，所有和框架启动初始化相关的代码都放到该包下
+
+
+
+#### 1. 服务提供者启动类
+
+- 新建 `ProviderBootstrap` 类，先直接复制之前服务提供者示例项目中的初始化代码，然后略微改造，支持用户传入自己
+  要注册的服务
+
+- 由于在注册服务时，我们需要填入多个字段，比如服务名称、服务实现类，参考代码如下:
+
+  ```java
+          // 注册服务
+          String serviceName = UserService.class.getName();
+          LocalRegistry.register(serviceName, UserServiceImpl.class);
+  ```
+
+- 因此可以将这些字段进行封装，在 model 包下新建 `ServiceRegisterInfo` 类，代码如下
+
+  ```java
+  package com.lhk.kkrpc.bootstrap;
+  
+  import lombok.AllArgsConstructor;
+  import lombok.Data;
+  import lombok.NoArgsConstructor;
+  
+  /**
+   * 服务注册信息类
+   */
+  @Data
+  @AllArgsConstructor
+  @NoArgsConstructor
+  public class ServiceRegisterInfo<T> {
+  
+      /**
+       * 服务名称
+       */
+      private String serviceName;
+  
+      /**
+       * 实现类
+       */
+      private Class<? extends T> implClass;
+  }
+  
+  ```
+
+- 这样一来，服务提供者的初始化方法只需要接受封装的注册信息列表作为参数即可，简化了方法
+
+  ```java
+  package com.lhk.kkrpc.bootstrap;
+  
+  import com.lhk.kkrpc.RpcApplication;
+  import com.lhk.kkrpc.config.RegistryConfig;
+  import com.lhk.kkrpc.config.RpcConfig;
+  import com.lhk.kkrpc.model.ServiceMetaInfo;
+  import com.lhk.kkrpc.registry.LocalRegistry;
+  import com.lhk.kkrpc.registry.Registry;
+  import com.lhk.kkrpc.registry.RegistryFactory;
+  import com.lhk.kkrpc.server.tcp.VertxTcpServer;
+  
+  import java.util.List;
+  
+  /**
+   * 服务提供者启动类
+   */
+  public class ProviderBootstrap {
+      public static void init(List<ServiceRegisterInfo<?>> serviceRegisterInfos){
+  
+          // 初始化 RPC 配置 (从 application.properties 文件中读取配置)
+          RpcApplication.init();
+          // 获取 RPC 配置对象
+          final RpcConfig rpcConfig = RpcApplication.getRpcConfig();
+  
+          for (ServiceRegisterInfo<?> serviceRegisterInfo : serviceRegisterInfos) {
+              String serviceName = serviceRegisterInfo.getServiceName();
+              // 本地注册服务
+              LocalRegistry.register(serviceName, serviceRegisterInfo.getImplClass());
+  
+              // 注册服务到注册中心
+              RegistryConfig registryConfig = rpcConfig.getRegistryConfig();
+              Registry registry = RegistryFactory.getInstance(registryConfig.getRegistry());
+              ServiceMetaInfo serviceMetaInfo = new ServiceMetaInfo();
+              serviceMetaInfo.setServiceName(serviceName);
+              serviceMetaInfo.setServiceHost(rpcConfig.getServerHost());
+              serviceMetaInfo.setServicePort(rpcConfig.getServerPort());
+              try {
+                  registry.register(serviceMetaInfo);
+              } catch (Exception e) {
+                  throw new RuntimeException(serviceName + " 注册失败",e);
+              }
+          }
+  
+          // 启动 tcp 服务
+          VertxTcpServer vertxTcpServer = new VertxTcpServer();
+          vertxTcpServer.doStart(rpcConfig.getServerPort());
+  
+      }
+  }
+  ```
+
+- 这样，想要在服务提供者项目中使用 RPC 框架，就非常简单了。只需要定义要注册的服务列表，然后一行代码调用`ProviderBootstrap.init()` 方法即可完成初始化
+
+  ```java
+  package com.lhk.example.provider;
+  
+  import com.lhk.example.common.service.UserService;
+  import com.lhk.kkrpc.bootstrap.ProviderBootstrap;
+  import com.lhk.kkrpc.bootstrap.ServiceRegisterInfo;
+  
+  import java.util.ArrayList;
+  import java.util.List;
+  
+  /**
+   * 服务提供者示例（针对测试 kk-rpc-core）
+   */
+  public class ProviderExample {
+  
+      public static void main(String[] args) {
+          // 要注册的服务列表
+          List<ServiceRegisterInfo> serviceRegisterInfos = new ArrayList<>();
+          ServiceRegisterInfo userServiceRegisterInfo = new ServiceRegisterInfo(UserService.class.getName(),UserServiceImpl.class);
+          serviceRegisterInfos.add(userServiceRegisterInfo);
+          // 服务提供者初始化并启动
+          ProviderBootstrap.init(serviceRegisterInfos);
+      }
+  }
+  ```
+
+
+
+#### 二、服务消费者启动类
+
+- 服务消费者启动类的实现较为容易，因为它不需要注册服务、也不需要启动 Web 服务器，因此只需要执行 `RpcApplicatio
+  n.init()` 完成框架的通用初始化即可
+
+  ```java
+  package com.lhk.kkrpc.bootstrap;
+  
+  import com.lhk.kkrpc.RpcApplication;
+  
+  /**
+   * 服务消费者启动类
+   */
+  public class ConsumerBootstrap {
+  
+      /**
+       * 初始化 RPC 配置
+       */
+      public static void init(){
+          // 初始化 RPC 配置 (从 application.properties 文件中读取配置)
+          RpcApplication.init();
+      }
+  }
+  
+  ```
+
+- 服务消费者代码调整
+
+  ```java
+  package com.lhk.example.consumer;
+  
+  import com.lhk.example.common.model.User;
+  import com.lhk.example.common.service.UserService;
+  import com.lhk.kkrpc.bootstrap.ConsumerBootstrap;
+  import com.lhk.kkrpc.proxy.ServiceProxyFactory;
+  
+  /**
+   * 服务消费者示例（针对测试 kk-rpc-core）
+   */
+  public class ConsumerExample {
+  
+      public static void main(String[] args) throws InterruptedException {
+          ConsumerBootstrap.init();
+          // 获取代理
+          UserService userService = ServiceProxyFactory.getProxy(UserService.class);
+          User user = new User();
+          user.setName("lhk");
+          // 远程调用
+          User newUser = userService.getUser(user);
+          if (newUser != null) {
+              System.out.println(newUser.getName());
+          } else {
+              System.out.println("user == null");
+          }
+          userService.getUser(user);
+  
+          Thread.sleep(10000);
+  
+          userService.getUser(user);
+      }
+  }
+  
+  ```
+
+  
+
+
+
 
 
 
