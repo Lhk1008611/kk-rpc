@@ -38,7 +38,7 @@ public class RpcProviderBootstrap implements BeanPostProcessor {
             // 获取服务名
             String serviceName = interfaceClass.getName();
             // 获取服务版本
-            String serviceVersion = rpcServiceAnnotation.version();
+            String serviceVersion = rpcServiceAnnotation.serviceVersion();
 
             // 注册服务
             // 本地注册

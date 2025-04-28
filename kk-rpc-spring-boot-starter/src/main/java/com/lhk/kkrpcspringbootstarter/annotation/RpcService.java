@@ -19,7 +19,7 @@ public @interface RpcService {
     /**
      * 服务接口类
      */
-    Class<?> interfaceClass() default void.class;
+    Class<?> serviceInterface() default void.class;
 
     /**
      * 服务版本号

@@ -21,6 +21,7 @@ public class RpcConsumerBootstrap implements BeanPostProcessor {
      */
     @Override
     public Object postProcessAfterInitialization(Object bean, String beanName) throws BeansException {
+        //反射获取类
         Class<?> beanClass = bean.getClass();
         Field[] declaredField = beanClass.getDeclaredFields();
         // 遍历对象所有属性
@@ -31,6 +32,7 @@ public class RpcConsumerBootstrap implements BeanPostProcessor {
                 Class<?> interfaceClass = rpcReference.interfaceClass();
                 // 默认值处理
                 if (interfaceClass == void.class){
+                    // 赋值为属性原本类型
                     interfaceClass = field.getType();
                 }
                 field.setAccessible(true);

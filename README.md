@@ -3677,7 +3677,150 @@ public class FailOverTolerantStrategy implements TolerantStrategy {
 
 
 
+## 测试 starter
 
+- 新建 2 个使用 Spring Boot 2 框架的项目
+  - Spring Boot 消费者: `example-springboot-consumer`
+  - Spring Boot 提供者:`example-springboot-provider`
+
+- 都引入 rpc 框架依赖
+
+  ```xml
+  
+          <dependency>
+              <groupId>com.lhk</groupId>
+              <artifactId>kk-rpc-spring-boot-starter</artifactId>
+              <version>0.0.1-SNAPSHOT</version>
+          </dependency>
+          <dependency>
+              <groupId>com.lhk</groupId>
+              <artifactId>example-common</artifactId>
+              <version>1.0-SNAPSHOT</version>
+          </dependency>
+  
+  ```
+
+- 在服务提供者项目的入口类加上`@EnableRpc` 注解
+
+  ```java
+  package com.lhk.examplespringbootprovider;
+  
+  import com.lhk.kkrpcspringbootstarter.annotation.EnableRpc;
+  import org.springframework.boot.SpringApplication;
+  import org.springframework.boot.autoconfigure.SpringBootApplication;
+  
+  @SpringBootApplication
+  @EnableRpc
+  public class ExampleSpringbootProviderApplication {
+  
+      public static void main(String[] args) {
+          SpringApplication.run(ExampleSpringbootProviderApplication.class, args);
+      }
+  
+  }
+  ```
+
+- 在服务提供者项目提供一个示例服务，并加上`@RpcService`注解
+
+  ```java
+  package com.lhk.examplespringbootprovider;
+  
+  import com.lhk.example.common.model.User;
+  import com.lhk.example.common.service.UserService;
+  import com.lhk.kkrpcspringbootstarter.annotation.RpcService;
+  import org.springframework.stereotype.Service;
+  
+  /**
+   * 示例服务实现类
+   */
+  @Service
+  @RpcService
+  public class UserServiceImpl implements UserService {
+      @Override
+      public User getUser(User user) {
+          System.out.println("用户名：" + user.getName());
+          return user;
+      }
+  }
+  
+  ```
+
+- 在服务消费者的入口类加上 `@EnableRpc(needserver = false)` 注解，标识启动 RPC 框架，但不启动服务器
+
+  ```JAVA
+  package com.lhk.examplespringbootconsumer;
+  
+  import com.lhk.kkrpcspringbootstarter.annotation.EnableRpc;
+  import org.springframework.boot.SpringApplication;
+  import org.springframework.boot.autoconfigure.SpringBootApplication;
+  
+  @SpringBootApplication
+  @EnableRpc(needServer = false)
+  public class ExampleSpringbootConsumerApplication {
+  
+      public static void main(String[] args) {
+          SpringApplication.run(ExampleSpringbootConsumerApplication.class, args);
+      }
+  
+  }
+  
+  ```
+
+- 服务消费者编写一个 Spring 的 Bean，引入 `UserService` 属性并打上 `@RpcReference` 注解，表示需要使用远程服务提供者的服
+  务
+
+  ```java
+  package com.lhk.examplespringbootconsumer;
+  
+  import com.lhk.example.common.model.User;
+  import com.lhk.example.common.service.UserService;
+  import com.lhk.kkrpcspringbootstarter.annotation.RpcReference;
+  import org.springframework.stereotype.Service;
+  
+  /**
+   * 远程调用示例
+   */
+  @Service
+  public class ExampleConsumer {
+  
+      @RpcReference
+      private static UserService userService;
+  
+      public  void consumer() {
+          User user = new User();
+          user.setName("lhk");
+          System.out.println("远程调用后用户名："+userService.getUser(user));
+      }
+  }
+  
+  ```
+
+- 服务消费者编写单元测试，验证能否调用远程服务
+
+  ```java
+  package com.lhk.examplespringbootconsumer;
+  
+  import org.junit.jupiter.api.Test;
+  import org.springframework.boot.test.context.SpringBootTest;
+  
+  import javax.annotation.Resource;
+  
+  @SpringBootTest
+  class ExampleSpringbootConsumerApplicationTests {
+  
+      @Resource
+      private ExampleConsumer exampleConsumer;
+  
+      @Test
+      void consumer() {
+          exampleConsumer.consumer();
+      }
+  
+  }
+  
+  ```
+
+  
 
 
 
