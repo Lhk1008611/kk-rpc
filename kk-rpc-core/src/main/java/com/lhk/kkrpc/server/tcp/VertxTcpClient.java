@@ -9,6 +9,7 @@ import com.lhk.kkrpc.protocol.*;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.net.NetClient;
+import io.vertx.core.net.NetClientOptions;
 import io.vertx.core.net.NetSocket;
 
 import java.io.IOException;
@@ -22,7 +23,8 @@ public class VertxTcpClient {
     public static RpcResponse doRequest(RpcRequest rpcRequest, ServiceMetaInfo serviceMetaInfo) throws ExecutionException, InterruptedException {
         // 发送 tcp 请求
         Vertx vertx = Vertx.vertx();
-        NetClient netClient = vertx.createNetClient();
+        NetClientOptions netClientOptions = new NetClientOptions().setConnectTimeout(3000);
+        NetClient netClient = vertx.createNetClient(netClientOptions);
         // 由于 vertx 发送的是异步的 tcp 请求，所以需要使用 CompletableFuture 转异步为同步更方便获取请求结果
         CompletableFuture<RpcResponse> responseCompletableFuture = new CompletableFuture<>();
         netClient.connect(serviceMetaInfo.getServicePort(), serviceMetaInfo.getServiceHost(),

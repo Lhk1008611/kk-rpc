@@ -24,7 +24,7 @@ public class TcpBufferHandlerWrapper implements Handler<Buffer> {
 
     /**
      * 构造 RecordParser
-     * @param bufferHandler
+     * @param bufferHandler 用于处理 buffer
      * @return RecordParser
      */
     private RecordParser initRecordParser(Handler<Buffer> bufferHandler) {
